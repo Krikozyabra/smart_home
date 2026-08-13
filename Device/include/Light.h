@@ -2,19 +2,15 @@
 
 #include "Device.h"
 #include "interfaces/IOnOff.h"
-#include <cstddef>
+#include "interfaces/IColor.h"
+#include "interfaces/IBrightness.h"
+#include "utility/color_type.h"
 #include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <utility>
 
-struct Color {
-    std::uint8_t red;
-    std::uint8_t green;
-    std::uint8_t blue;
-};
-
-class Light : public Device, public IOnOff {
+class Light : public Device, public IOnOff, public IBrightness, public IColor {
   public:
     Light(unsigned int c_id, std::string c_name, bool c_isOn,
           std::uint8_t c_brightness, struct Color c_color)
@@ -24,8 +20,8 @@ class Light : public Device, public IOnOff {
     bool isOn() const override { return this->isOn_state; }
     void setOn(bool new_isOn) override { this->isOn_state = new_isOn; }
 
-    std::uint8_t getBrightness() const { return this->brightness; }
-    void setBrightness(std::uint8_t new_brightness) {
+    std::uint8_t getBrightness() const override { return this->brightness; }
+    void setBrightness(std::uint8_t new_brightness) override {
         if (new_brightness > 100)
             throw std::invalid_argument(
                 "Light's brightness should be in range 0 and 100");
@@ -33,8 +29,8 @@ class Light : public Device, public IOnOff {
         this->brightness = new_brightness;
     }
 
-    struct Color getColor() const { return this->color; }
-    void setColor(struct Color new_color) { this->color = std::move(new_color); }
+    struct Color getColor() const override { return this->color; }
+    void setColor(struct Color new_color) override { this->color = new_color; }
 
   private:
     bool isOn_state;
