@@ -1,6 +1,6 @@
 #pragma once
 
-#include "utility/color_type.h"
+#include "types/Color.h"
 
 class IColor {
     public:

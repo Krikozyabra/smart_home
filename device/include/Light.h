@@ -4,7 +4,7 @@
 #include "interfaces/IOnOff.h"
 #include "interfaces/IColor.h"
 #include "interfaces/IBrightness.h"
-#include "utility/color_type.h"
+#include "types/Color.h"
 #include <cstdint>
 #include <stdexcept>
 #include <string>

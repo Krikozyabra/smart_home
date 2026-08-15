@@ -1,44 +1,25 @@
 #include "Device.h"
-#include "Light.h"
-#include "TemperatureSensor.h"
+#include "drivers/SimulatedLightDriver.h"
+#include "drivers/interfaces/IDeviceDriver.h"
 #include "interfaces/IBrightness.h"
-#include "interfaces/IColor.h"
-#include "interfaces/IOnOff.h"
-#include "utility/color_type.h"
+
+#include <memory>
 #include <iostream>
 
 int main(int argc, char *argv[]) {
-    Color c1{100, 120, 100};
-    Device *light = new Light(0, "Light1", true, 0, c1);
+    std::unique_ptr<smart_home::IDeviceDriver> simulated_light =
+        std::make_unique<smart_home::SimulatedLightDriver>(0, "AC:12:BD",
+                                                           "Light1");
 
-    IOnOff *power = dynamic_cast<IOnOff *>(light);
-    if (power != nullptr) {
-        power->setOn(true);
-        std::cout << "Light's on state = " << power->isOn() << std::endl;
+    Device &simulated_device = simulated_light->device();
+
+    auto* brightness = dynamic_cast<IBrightness*>(&simulated_device);
+
+    if(brightness != nullptr){
+        brightness->setBrightness(100);
+        std::cout << "The simulated light's brightness is " << static_cast<int>(brightness->getBrightness()) << std::endl;
+    }else {
+        std::cout << "The device doesn't have the brightness\n";
     }
-
-    IBrightness *brightness = dynamic_cast<IBrightness *>(light);
-    if (brightness != nullptr) {
-        brightness->setBrightness(50);
-        std::cout << "Light's brightness set on " << brightness->getBrightness()
-                  << std::endl;
-    }
-
-    IColor *color = dynamic_cast<IColor *>(light);
-    if (color != nullptr) {
-        Color c2{250, 0, 0};
-        color->setColor(c2);
-        std::cout << "Light's color is " << color->getColor().red << " red, "
-                  << color->getColor().green << " green, "
-                  << color->getColor().blue << " blue\n";
-    }
-
-    Device *ts = new TemperatureSensor(1, "TS1");
-    IOnOff *ts_power = dynamic_cast<IOnOff*>(ts);
-    if (ts_power == nullptr) std::cout << "TS doesnt have the IOnOff\n";
-    IBrightness *ts_brightness = dynamic_cast<IBrightness*>(ts);
-    if (ts_brightness == nullptr) std::cout << "TS doesnt have the IBrightness\n";
-    IColor *ts_color = dynamic_cast<IColor*>(ts);
-    if (ts_color == nullptr) std::cout << "TS doesnt have the IColor\n";
     return 0;
 }
