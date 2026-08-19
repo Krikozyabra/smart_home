@@ -1,25 +1,20 @@
 #pragma once
 
-#include "Light.h"
+#include "devices/types/Color.h"
 #include "DeviceDescriptor.h"
-#include "drivers/interfaces/IDeviceDriver.h"
+#include "DeviceDriverBase.h"
 
 #include <string>
+#include <cstdint>
 
 namespace smart_home {
 
-class SimulatedLightDriver final : public IDeviceDriver {
+class SimulatedLightDriver final : public DeviceDriverBase{
   private:
-    Light device_object;
-    DeviceDescriptor descriptor_object;
-
-    DeviceDescriptor generateDeviceDescriptor(unsigned int, const std::string &, const std::string &);
-    Light generateDevice(unsigned int, const std::string &);
+    static DeviceDescriptor generateDeviceDescriptor(unsigned int, const std::string &, const std::string &);
 
   public:
-    SimulatedLightDriver(unsigned int, std::string, std::string);
-    Device &device() override;
-    const DeviceDescriptor &descriptor() const override;
+    SimulatedLightDriver(unsigned int, std::string, std::string, bool, uint8_t, Color);
 };
 
 } // namespace smart_home

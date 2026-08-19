@@ -1,11 +1,15 @@
 #pragma once
 
-#include "types/Color.h"
+#include "devices/types/Color.h"
+
+namespace smart_home {
 
 class IColor {
-    public:
+  public:
     virtual ~IColor() = default;
 
     virtual Color getColor() const = 0;
     virtual void setColor(Color) = 0;
 };
+
+} // namespace smart_home

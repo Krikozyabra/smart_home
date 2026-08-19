@@ -1,5 +1,6 @@
 add_library(smart_home_drivers STATIC
     src/SimulatedLightDriver.cpp
+    src/SimulatedTemperatureSensorDriver.cpp
 )
 
 add_library(SmartHome::Drivers ALIAS smart_home_drivers)
@@ -9,7 +10,7 @@ target_include_directories(smart_home_drivers PUBLIC
 )
 
 target_link_libraries(smart_home_drivers PRIVATE
-    SmartHome::Device
+    SmartHome::Devices
     SmartHome::Descriptors
 )
 

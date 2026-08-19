@@ -1,19 +1,18 @@
 #include "drivers/SimulatedLightDriver.h"
 #include "CapabilityDescriptor.h"
 #include "DeviceDescriptor.h"
-#include "Light.h"
 #include "OperationDescriptor.h"
 #include "ParameterDescriptor.h"
-#include "types/Color.h"
+#include "devices/Light.h"
+#include "devices/types/Color.h"
+#include "drivers/DeviceDriverBase.h"
 
+#include <cstdint>
 #include <string>
+#include <vector>
+#include <memory>
 
 namespace smart_home {
-
-Light SimulatedLightDriver::generateDevice(unsigned int local_id,
-                                            const std::string &name) {
-    return Light(local_id, name, false, 50, Color{100, 0, 50});
-}
 
 DeviceDescriptor
 SimulatedLightDriver::generateDeviceDescriptor(unsigned int local_id,
@@ -67,19 +66,12 @@ SimulatedLightDriver::generateDeviceDescriptor(unsigned int local_id,
         std::vector<CapabilityDescriptor>{on_off, brightness, color});
 }
 
-Device &SimulatedLightDriver::device() {
-    return this->device_object;
-}
-
-const DeviceDescriptor &SimulatedLightDriver::descriptor() const {
-    return this->descriptor_object;
-}
-
 SimulatedLightDriver::SimulatedLightDriver(unsigned int c_local_id,
                                            std::string c_physical_id,
-                                           std::string c_name)
-    : device_object(generateDevice(c_local_id, c_name)),
-      descriptor_object(
+                                           std::string c_name, bool c_isOn,
+                                           uint8_t c_brightness, Color c_color)
+    : DeviceDriverBase(
+          std::make_unique<Light>(c_local_id, c_name, c_isOn, c_brightness,
+                                  c_color),
           generateDeviceDescriptor(c_local_id, c_physical_id, c_name)) {}
-
 } // namespace smart_home

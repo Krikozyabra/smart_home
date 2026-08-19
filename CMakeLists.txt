@@ -7,8 +7,11 @@ project(smart_home
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-add_subdirectory(device)
+add_subdirectory(devices)
 add_subdirectory(descriptors)
 add_subdirectory(drivers)
+add_subdirectory(registry)
+add_subdirectory(command)
+add_subdirectory(execution)
 
 add_subdirectory(src)

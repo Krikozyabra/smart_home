@@ -1,14 +1,16 @@
 #pragma once
 
 #include "Device.h"
-#include "interfaces/IOnOff.h"
-#include "interfaces/IColor.h"
-#include "interfaces/IBrightness.h"
+#include "devices/interfaces/IBrightness.h"
+#include "devices/interfaces/IColor.h"
+#include "devices/interfaces/IOnOff.h"
 #include "types/Color.h"
 #include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <utility>
+
+namespace smart_home {
 
 class Light : public Device, public IOnOff, public IBrightness, public IColor {
   public:
@@ -37,3 +39,5 @@ class Light : public Device, public IOnOff, public IBrightness, public IColor {
     std::uint8_t brightness;
     struct Color color;
 };
+
+} // namespace smart_home

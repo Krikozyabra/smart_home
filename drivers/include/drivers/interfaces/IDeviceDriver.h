@@ -1,6 +1,7 @@
 #pragma once
 
-#include <Device.h>
+#include "devices/Device.h"
+
 #include <DeviceDescriptor.h>
 
 namespace smart_home{
