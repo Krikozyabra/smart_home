@@ -9,7 +9,7 @@ target_include_directories(smart_home_drivers PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-target_link_libraries(smart_home_drivers PRIVATE
+target_link_libraries(smart_home_drivers PUBLIC
     SmartHome::Devices
     SmartHome::Descriptors
 )
