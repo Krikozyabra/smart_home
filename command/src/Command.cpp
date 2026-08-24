@@ -1,5 +1,6 @@
 #include "command/Command.h"
 #include "command/Value.h"
+#include "common/DeviceId.h"
 
 #include <stdexcept>
 #include <string>
@@ -8,7 +9,7 @@
 
 namespace smart_home {
 
-Command::Command(unsigned int c_device_id, std::string c_operation_id,
+Command::Command(DeviceId c_device_id, std::string c_operation_id,
                  std::vector<Value> c_arguments)
     : device_id(c_device_id), operation_id(std::move(c_operation_id)),
       arguments(std::move(c_arguments)) {
@@ -16,7 +17,7 @@ Command::Command(unsigned int c_device_id, std::string c_operation_id,
         throw std::invalid_argument("Operation must not be empty");
 }
 
-unsigned int Command::getDeviceId() const { return device_id; }
+DeviceId Command::getDeviceId() const { return device_id; }
 
 const std::string &Command::getOperationId() const { return operation_id; }
 

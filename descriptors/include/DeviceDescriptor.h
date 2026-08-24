@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CapabilityDescriptor.h"
+#include "common/DeviceId.h"
 #include <string>
 #include <vector>
 #include <utility>
@@ -8,19 +9,19 @@
 namespace smart_home {
 
 class DeviceDescriptor {
-    unsigned int local_id;
+    DeviceId local_id;
     std::string physical_id;
     std::string name;
     std::vector<CapabilityDescriptor> capabilities;
 
   public:
-    DeviceDescriptor(unsigned int c_local_id, std::string c_physical_id,
+    DeviceDescriptor(DeviceId c_local_id, std::string c_physical_id,
                      std::string c_name,
                      std::vector<CapabilityDescriptor> c_capabilities)
         : local_id(c_local_id), physical_id(std::move(c_physical_id)),
           name(std::move(c_name)), capabilities(std::move(c_capabilities)) {}
 
-    unsigned int getLocalId() const {
+    DeviceId getLocalId() const {
         return this->local_id;
     }
 

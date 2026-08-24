@@ -3,6 +3,7 @@
 #include "DeviceDescriptor.h"
 #include "OperationDescriptor.h"
 #include "ParameterDescriptor.h"
+#include "common/DeviceId.h"
 #include "devices/TemperatureSensor.h"
 #include "drivers/DeviceDriverBase.h"
 
@@ -13,7 +14,7 @@
 namespace smart_home {
 
 SimulatedTemperatureSensorDriver::SimulatedTemperatureSensorDriver(
-    unsigned int c_local_id, std::string c_physical_id, std::string c_name,
+    DeviceId c_local_id, std::string c_physical_id, std::string c_name,
     double c_temperature)
     : DeviceDriverBase(
           std::make_unique<TemperatureSensor>(c_local_id, c_name,
@@ -21,7 +22,7 @@ SimulatedTemperatureSensorDriver::SimulatedTemperatureSensorDriver(
           generateDeviceDescriptor(c_local_id, c_physical_id, c_name)) {}
 
 DeviceDescriptor SimulatedTemperatureSensorDriver::generateDeviceDescriptor(
-    unsigned int local_id, const std::string &physical_id,
+    DeviceId local_id, const std::string &physical_id,
     const std::string &name) {
 
     ParameterDescriptor float_output("temperature.parameter.float",

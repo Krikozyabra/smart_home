@@ -3,6 +3,7 @@
 #include "DeviceDescriptor.h"
 #include "OperationDescriptor.h"
 #include "ParameterDescriptor.h"
+#include "common/DeviceId.h"
 #include "devices/Light.h"
 #include "devices/types/Color.h"
 #include "drivers/DeviceDriverBase.h"
@@ -15,7 +16,7 @@
 namespace smart_home {
 
 DeviceDescriptor
-SimulatedLightDriver::generateDeviceDescriptor(unsigned int local_id,
+SimulatedLightDriver::generateDeviceDescriptor(DeviceId local_id,
                                                const std::string &physical_id,
                                                const std::string &name) {
 
@@ -66,7 +67,7 @@ SimulatedLightDriver::generateDeviceDescriptor(unsigned int local_id,
         std::vector<CapabilityDescriptor>{on_off, brightness, color});
 }
 
-SimulatedLightDriver::SimulatedLightDriver(unsigned int c_local_id,
+SimulatedLightDriver::SimulatedLightDriver(DeviceId c_local_id,
                                            std::string c_physical_id,
                                            std::string c_name, bool c_isOn,
                                            uint8_t c_brightness, Color c_color)

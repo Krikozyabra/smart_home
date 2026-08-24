@@ -1,5 +1,6 @@
 #pragma once
 
+#include "common/DeviceId.h"
 #include "drivers/interfaces/IDeviceDriver.h"
 
 #include <cstddef>
@@ -10,13 +11,13 @@ namespace smart_home {
 
 class DeviceRegistry {
   private:
-    std::unordered_map<unsigned int, std::unique_ptr<IDeviceDriver>> drivers;
+    std::unordered_map<DeviceId, std::unique_ptr<IDeviceDriver>> drivers;
 
   public:
     void add(std::unique_ptr<IDeviceDriver>);
 
-    IDeviceDriver *find(unsigned int);
-    const IDeviceDriver *find(unsigned int) const;
+    IDeviceDriver *find(DeviceId);
+    const IDeviceDriver *find(DeviceId) const;
 
     std::size_t size() const;
 };

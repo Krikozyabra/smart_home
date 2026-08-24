@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(smart_home
-    VERSION 0.0.1
+    VERSION 0.1.0
     LANGUAGES CXX C
 )
 
@@ -9,12 +9,19 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 include(CTest)
 
+add_subdirectory(common)
+link_libraries(
+    SmartHome::Common
+)
+
 add_subdirectory(devices)
 add_subdirectory(descriptors)
 add_subdirectory(drivers)
 add_subdirectory(registry)
 add_subdirectory(command)
 add_subdirectory(execution)
+add_subdirectory(storage)
+add_subdirectory(device_management)
 
 add_subdirectory(src)
 

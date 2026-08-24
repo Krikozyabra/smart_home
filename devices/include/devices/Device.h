@@ -1,22 +1,23 @@
 #pragma once
 
+#include "common/DeviceId.h"
 #include <string>
 
 namespace smart_home {
 
 class Device {
   public:
-    Device(unsigned int, std::string);
+    Device(DeviceId, std::string);
     virtual ~Device() = default;
 
-    unsigned int getId() const;
+    DeviceId getId() const;
 
     std::string getName() const; 
     void setName(std::string);
 
   private:
     std::string name;
-    unsigned int id;
+    DeviceId id;
 };
 
 } // namespace smart_home

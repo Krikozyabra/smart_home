@@ -1,4 +1,5 @@
 #include "registry/DeviceRegistry.h"
+#include "common/DeviceId.h"
 #include "drivers/interfaces/IDeviceDriver.h"
 
 #include <cstddef>
@@ -11,7 +12,7 @@ void DeviceRegistry::add(std::unique_ptr<IDeviceDriver> driver) {
     if (driver == nullptr)
         throw std::invalid_argument("Driver must not be nullptr");
 
-    unsigned int local_id = driver->device().getId();
+    DeviceId local_id = driver->device().getId();
 
     auto [iterator, inserted] =
         drivers.try_emplace(local_id, std::move(driver));
@@ -22,7 +23,7 @@ void DeviceRegistry::add(std::unique_ptr<IDeviceDriver> driver) {
             " already registred");
 }
 
-const IDeviceDriver *DeviceRegistry::find(unsigned int local_id) const {
+const IDeviceDriver *DeviceRegistry::find(DeviceId local_id) const {
     auto iterator = drivers.find(local_id);
     if (iterator == drivers.end())
         return nullptr;
@@ -30,7 +31,7 @@ const IDeviceDriver *DeviceRegistry::find(unsigned int local_id) const {
     return iterator->second.get();
 }
 
-IDeviceDriver *DeviceRegistry::find(unsigned int local_id) {
+IDeviceDriver *DeviceRegistry::find(DeviceId local_id) {
     auto iterator = drivers.find(local_id);
     if (iterator == drivers.end())
         return nullptr;

@@ -2,6 +2,7 @@
 
 #include "DeviceDescriptor.h"
 #include "DeviceDriverBase.h"
+#include "common/DeviceId.h"
 
 #include <string>
 
@@ -9,11 +10,11 @@ namespace smart_home {
 
 class SimulatedTemperatureSensorDriver final : public DeviceDriverBase{
   private:
-    static DeviceDescriptor generateDeviceDescriptor(unsigned int, const std::string &,
+    static DeviceDescriptor generateDeviceDescriptor(DeviceId, const std::string &,
                                               const std::string &);
 
   public:
-    SimulatedTemperatureSensorDriver(unsigned int, std::string, std::string,
+    SimulatedTemperatureSensorDriver(DeviceId, std::string, std::string,
                                      double);
 };
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Device.h"
+#include "common/DeviceId.h"
 #include "devices/interfaces/IBrightness.h"
 #include "devices/interfaces/IColor.h"
 #include "devices/interfaces/IOnOff.h"
@@ -14,7 +15,7 @@ namespace smart_home {
 
 class Light : public Device, public IOnOff, public IBrightness, public IColor {
   public:
-    Light(unsigned int c_id, std::string c_name, bool c_isOn,
+    Light(DeviceId c_id, std::string c_name, bool c_isOn,
           std::uint8_t c_brightness, struct Color c_color)
         : Device(c_id, std::move(c_name)), isOn_state(c_isOn),
           brightness(c_brightness), color(c_color) {}

@@ -9,4 +9,5 @@ target_link_libraries(smart_home PRIVATE
     SmartHome::Registry
     SmartHome::Command
     SmartHome::Execution
+    SmartHome::Storage
 )
