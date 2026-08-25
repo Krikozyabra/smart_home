@@ -21,6 +21,7 @@ add_executable(registry_tests
 target_link_libraries(registry_tests PRIVATE
     SmartHome::Registry
     SmartHome::Drivers
+    SmartHome::Storage
 )
 
 add_test(
@@ -56,4 +57,19 @@ target_link_libraries(sql_storage_tests
 add_test(
     NAME sql_storage_tests
     COMMAND sql_storage_tests
+)
+
+
+add_executable(factories_tests
+    FactoriesTests.cpp
+)
+
+target_link_libraries(factories_tests
+    SmartHome::Drivers
+    SmartHome::Storage
+)
+
+add_test(
+    NAME factories_tests
+    COMMAND factories_tests
 )

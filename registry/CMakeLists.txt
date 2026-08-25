@@ -1,5 +1,6 @@
 add_library(smart_home_registry STATIC
     src/DeviceRegistry.cpp
+    src/DriverFactoryRegistry.cpp
 )
 
 add_library(SmartHome::Registry ALIAS smart_home_registry)
