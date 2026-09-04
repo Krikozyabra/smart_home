@@ -15,7 +15,7 @@ std::string SimulatedLightDriverFactory::getDriverId() const {
 }
 
 std::unique_ptr<IDeviceDriver>
-SimulatedLightDriverFactory::create(const DeviceRecord &record) {
+SimulatedLightDriverFactory::create(const DeviceRecord &record) const {
     if (record.driver_id != getDriverId())
         throw std::invalid_argument(
             "SimulatedLightDriverFactory cannot create driver for '" +

@@ -12,7 +12,7 @@ class IDeviceDriverFactory {
     virtual ~IDeviceDriverFactory() = default;
 
     virtual std::string getDriverId() const = 0;
-    virtual std::unique_ptr<IDeviceDriver> create(const DeviceRecord &) = 0;
+    virtual std::unique_ptr<IDeviceDriver> create(const DeviceRecord &) const = 0;
 };
 
 } // namespace smart_home

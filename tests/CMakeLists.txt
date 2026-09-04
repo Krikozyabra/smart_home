@@ -1,75 +1,101 @@
 add_executable(command_dispatcher_tests
-    CommandDispatcherTests.cpp
+CommandDispatcherTests.cpp
 )
 
 target_link_libraries(command_dispatcher_tests PRIVATE
-    SmartHome::Registry
-    SmartHome::Drivers
-    SmartHome::Execution
+SmartHome::Registry
+SmartHome::Drivers
+SmartHome::Execution
 )
 
 add_test(
-    NAME command_dispatcher_tests
-    COMMAND command_dispatcher_tests
+NAME command_dispatcher_tests
+COMMAND command_dispatcher_tests
 )
-
-
-add_executable(registry_tests
-    RegistryTests.cpp
-)
-
-target_link_libraries(registry_tests PRIVATE
-    SmartHome::Registry
-    SmartHome::Drivers
-    SmartHome::Storage
-)
-
-add_test(
-    NAME registry_tests
-    COMMAND registry_tests
-)
-
 
 add_executable(storage_tests
-    StorageTests.cpp
+StorageTests.cpp
 )
 
 target_link_libraries(storage_tests
-    SmartHome::Storage
-    SmartHome::DeviceManagement
+SmartHome::Storage
+SmartHome::DeviceManagement
 )
 
 add_test(
-    NAME storage_tests
-    COMMAND storage_tests
+NAME storage_tests
+COMMAND storage_tests
 )
 
-
 add_executable(sql_storage_tests
-    SQLStorageTests.cpp
+SQLStorageTests.cpp
 )
 
 target_link_libraries(sql_storage_tests
-    SmartHome::Storage
-    SmartHome::DeviceManagement
+SmartHome::Storage
+SmartHome::DeviceManagement
 )
 
 add_test(
-    NAME sql_storage_tests
-    COMMAND sql_storage_tests
+NAME sql_storage_tests
+COMMAND sql_storage_tests
 )
 
-
 add_executable(factories_tests
-    FactoriesTests.cpp
+FactoriesTests.cpp
 )
 
 target_link_libraries(factories_tests
-    SmartHome::Drivers
-    SmartHome::Storage
+SmartHome::Drivers
+SmartHome::Storage
 )
 
 add_test(
-    NAME factories_tests
-    COMMAND factories_tests
+NAME factories_tests
+COMMAND factories_tests
+)
+
+add_executable(device_registry_tests
+DeviceRegistryTests.cpp
+)
+
+target_link_libraries(device_registry_tests PRIVATE
+SmartHome::Registry
+SmartHome::Drivers
+SmartHome::Devices
+)
+
+add_test(
+NAME device_registry_tests
+COMMAND device_registry_tests
+)
+
+add_executable(driver_factory_registry_tests
+DriverFactoryRegistryTests.cpp
+)
+
+target_link_libraries(driver_factory_registry_tests PRIVATE
+SmartHome::Registry
+SmartHome::Drivers
+)
+
+add_test(
+NAME driver_factory_registry_tests
+COMMAND driver_factory_registry_tests
+)
+
+add_executable(device_manager_tests
+DeviceManagerTests.cpp
+)
+
+target_link_libraries(device_manager_tests PRIVATE
+SmartHome::Registry
+SmartHome::Drivers
+SmartHome::Storage
+SmartHome::DeviceManagement
+)
+
+add_test(
+NAME device_manager_tests
+COMMAND device_manager_tests
 )

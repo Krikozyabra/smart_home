@@ -1,6 +1,5 @@
 #include "registry/DriverFactoryRegistry.h"
 #include "drivers/factories/IDeviceDriverFactory.h"
-
 #include <cstddef>
 #include <memory>
 #include <stdexcept>
@@ -9,40 +8,35 @@
 namespace smart_home {
 
 void DriverFactoryRegistry::add(std::unique_ptr<IDeviceDriverFactory> factory) {
-    if (factory == nullptr)
-        throw std::invalid_argument(
-            "DriverFactoryRegistry cannot accept nullptr factory");
-    std::string driver_id = factory->getDriverId();
-    if (driver_id.empty())
-        throw std::invalid_argument(
-            "Factory must not have empty linked driver id");
-
-    auto [iterator, inserted] =
-        factories.try_emplace(driver_id, std::move(factory));
-
-    if (!inserted)
-        throw std::runtime_error("Factory for driver id = '" + driver_id +
-                                 "' already in registry");
+  if (factory == nullptr)
+    throw std::invalid_argument(
+        "DriverFactoryRegistry cannot accept nullptr factory");
+  if (factory->getDriverId().empty())
+    throw std::invalid_argument("Factory must not have empty linked driver id");
+  auto [iterator, inserted] =
+      factories.try_emplace(factory->getDriverId(), std::move(factory));
+  if (!inserted)
+    throw std::runtime_error("Factory for driver id = '" +
+                             factory->getDriverId() + "' already in registry");
 }
 
 IDeviceDriverFactory *
 DriverFactoryRegistry::find(const std::string &driver_id) {
-    auto iterator = factories.find(driver_id);
-    if (iterator == factories.end())
-        return nullptr;
-    return iterator->second.get();
+  auto iterator = factories.find(driver_id);
+  if (iterator == factories.end())
+    return nullptr;
+  return iterator->second.get();
 }
 
 const IDeviceDriverFactory *
 DriverFactoryRegistry::find(const std::string &driver_id) const {
-    auto iterator = factories.find(driver_id);
-    if (iterator == factories.end())
-        return nullptr;
-    return iterator->second.get();
+  auto iterator = factories.find(driver_id);
+  if (iterator == factories.end())
+    return nullptr;
+  return iterator->second.get();
 }
-
 std::size_t DriverFactoryRegistry::size() const noexcept {
-    return factories.size();
+  return factories.size();
 }
 
 } // namespace smart_home

@@ -12,7 +12,7 @@ namespace smart_home {
 class SimulatedLightDriverFactory final : public IDeviceDriverFactory {
   public:
     std::string getDriverId() const override;
-    std::unique_ptr<IDeviceDriver> create(const DeviceRecord &) override;
+    std::unique_ptr<IDeviceDriver> create(const DeviceRecord &) const override;
 };
 
 } // namespace smart_home

@@ -10,6 +10,7 @@ target_include_directories(smart_home_device_management PUBLIC
 
 target_link_libraries(smart_home_device_management PUBLIC
     SmartHome::Storage
+    SmartHome::Registry
 )
 
 target_compile_features(smart_home_device_management PRIVATE
