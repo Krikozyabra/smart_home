@@ -24,8 +24,8 @@ class InMemoryDeviceStorage final : public IDeviceStorage {
                         const std::string &name) override;
 
     std::optional<DeviceRecord>
-    findByPhysicalId(const std::string &driver_id,
-                     const std::string &physical_id) const override;
+    findByPhysicalId(const std::string &physical_id,
+                     const std::string &driver_id) const override;
 
     std::vector<DeviceRecord> getAll() const override;
 };

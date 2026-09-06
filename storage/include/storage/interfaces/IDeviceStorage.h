@@ -13,8 +13,8 @@ class IDeviceStorage {
     virtual ~IDeviceStorage() = default;
 
     virtual std::optional<DeviceRecord>
-    findByPhysicalId(const std::string &driver_id,
-                     const std::string &physical_id) const = 0;
+    findByPhysicalId(const std::string &physical_id,
+                     const std::string &driver_id) const = 0;
 
     virtual DeviceRecord insert(const std::string &physical_id,
                                 const std::string &driver_id,
