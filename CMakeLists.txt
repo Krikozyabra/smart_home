@@ -22,6 +22,7 @@ add_subdirectory(command)
 add_subdirectory(execution)
 add_subdirectory(storage)
 add_subdirectory(device_management)
+add_subdirectory(discovery)
 
 add_subdirectory(src)
 

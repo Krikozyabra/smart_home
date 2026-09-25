@@ -1,3 +1,5 @@
+#pragma once
+
 #include "registry/DeviceRegistry.h"
 #include "registry/DriverFactoryRegistry.h"
 #include "storage/DeviceRecord.h"

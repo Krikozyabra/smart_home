@@ -56,7 +56,7 @@ DeviceManager::registerDiscoveredDevice(const std::string &physical_id,
     auto *factory = factory_registry.find(driver_id);
     if (factory == nullptr)
         throw std::invalid_argument("The driver '" + driver_id +
-                                    "' is not supporting");
+                                    "' is not supported");
     DeviceRecord discovered_device =
         getOrCreate(physical_id, driver_id, default_name);
     IDeviceDriver *device_driver =

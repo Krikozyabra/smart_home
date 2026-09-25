@@ -99,3 +99,17 @@ add_test(
 NAME device_manager_tests
 COMMAND device_manager_tests
 )
+
+
+add_executable(discovery_tests
+    DiscoveryTests.cpp
+)
+
+target_link_libraries(discovery_tests PRIVATE
+    SmartHome::Discovery
+)
+
+add_test(
+    NAME discovery_tests
+    COMMAND discovery_tests
+)
