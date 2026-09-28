@@ -2,7 +2,7 @@
 
 #include "devices/Device.h"
 
-#include <DeviceDescriptor.h>
+#include <descriptors/DeviceDescriptor.h>
 
 namespace smart_home{
 

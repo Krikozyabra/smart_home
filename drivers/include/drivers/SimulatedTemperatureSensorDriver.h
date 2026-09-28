@@ -1,17 +1,18 @@
 #pragma once
 
-#include "DeviceDescriptor.h"
-#include "DeviceDriverBase.h"
+#include "drivers/DeviceDriverBase.h"
 #include "common/DeviceId.h"
+#include "descriptors/DeviceDescriptor.h"
 
 #include <string>
 
 namespace smart_home {
 
-class SimulatedTemperatureSensorDriver final : public DeviceDriverBase{
+class SimulatedTemperatureSensorDriver final : public DeviceDriverBase {
   private:
-    static DeviceDescriptor generateDeviceDescriptor(DeviceId, const std::string &,
-                                              const std::string &);
+    static DeviceDescriptor generateDeviceDescriptor(DeviceId,
+                                                     const std::string &,
+                                                     const std::string &);
 
   public:
     SimulatedTemperatureSensorDriver(DeviceId, std::string, std::string,

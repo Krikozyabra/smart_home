@@ -10,10 +10,6 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 include(CTest)
 
 add_subdirectory(common)
-link_libraries(
-    SmartHome::Common
-)
-
 add_subdirectory(devices)
 add_subdirectory(descriptors)
 add_subdirectory(drivers)

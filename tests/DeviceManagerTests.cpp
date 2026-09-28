@@ -29,14 +29,22 @@ int main() {
                 "Registered device must be found in presistence storage");
         require(devices.size() == 1,
                 "Registered device must create runtime object");
-        require(devices.find(device_record.local_id)->device().getName() ==
-                    device_record.name,
+        require(devices.find(device_record.local_id) != nullptr,
                 "Registered device must be found in runtime storage");
+        require(
+            devices.find(device_record.local_id)->device().getName() ==
+                device_record.name,
+            "Registered device must be correct registered in runtime storage");
         auto found_record = manager.registerDiscoveredDevice(
             "SIM-LIGHT-001", "simulated.light", "Here we go");
-        require(found_record.name == device_record.name,
+        require(found_record.name == device_record.name &&
+                    found_record.local_id == device_record.local_id &&
+                    found_record.driver_id == device_record.driver_id &&
+                    found_record.physical_id == device_record.physical_id,
                 "Repeating registration for already registered device must "
                 "return stored record");
+        require(storage.getAll().size() == 1,
+                "Storage should not change state after repeating");
 
         expectException<std::invalid_argument>([&] {
             manager.registerDiscoveredDevice("SIM-ROBOT-001", "simulated.robot",

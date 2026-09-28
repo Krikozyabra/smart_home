@@ -1,15 +1,15 @@
 #include "drivers/SimulatedTemperatureSensorDriver.h"
-#include "CapabilityDescriptor.h"
-#include "DeviceDescriptor.h"
-#include "OperationDescriptor.h"
-#include "ParameterDescriptor.h"
 #include "common/DeviceId.h"
+#include "descriptors/CapabilityDescriptor.h"
+#include "descriptors/DeviceDescriptor.h"
+#include "descriptors/OperationDescriptor.h"
+#include "descriptors/ParameterDescriptor.h"
 #include "devices/TemperatureSensor.h"
 #include "drivers/DeviceDriverBase.h"
 
+#include <memory>
 #include <string>
 #include <vector>
-#include <memory>
 
 namespace smart_home {
 

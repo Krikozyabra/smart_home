@@ -15,8 +15,9 @@ if(NOT TARGET SQLite3::SQLite3)
     add_library(SQLite3::SQLite3 ALIAS SQLite::SQLite3)
 endif()
 
-target_link_libraries(smart_home_storage PRIVATE
+target_link_libraries(smart_home_storage PUBLIC
     SQLite3::SQLite3
+    SmartHome::Common
 )
 
 target_compile_features(smart_home_storage PRIVATE

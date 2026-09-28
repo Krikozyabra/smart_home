@@ -1,6 +1,6 @@
 #pragma once
 
-#include "DeviceDescriptor.h"
+#include "descriptors/DeviceDescriptor.h"
 #include "devices/Device.h"
 #include "interfaces/IDeviceDriver.h"
 

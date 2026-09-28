@@ -1,7 +1,6 @@
 #pragma once
 
 #include "device_management/DeviceManager.h"
-#include "discovery/entities/DiscoveredDevice.h"
 #include "discovery/interfaces/IDeviceDiscoverySource.h"
 
 #include <memory>
@@ -12,8 +11,6 @@ class DiscoveryService {
   private:
     std::vector<std::unique_ptr<IDeviceDiscoverySource>> sources;
     DeviceManager &device_manager;
-
-    std::vector<DiscoveredDevice> scanSources();
 
   public:
     DiscoveryService(

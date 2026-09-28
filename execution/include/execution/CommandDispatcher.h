@@ -1,8 +1,8 @@
 #pragma once
 
-#include "DeviceDescriptor.h"
-#include "OperationDescriptor.h"
-#include "ParameterDescriptor.h"
+#include "descriptors/DeviceDescriptor.h"
+#include "descriptors/OperationDescriptor.h"
+#include "descriptors/ParameterDescriptor.h"
 #include "command/Command.h"
 #include "command/Value.h"
 #include "devices/Device.h"

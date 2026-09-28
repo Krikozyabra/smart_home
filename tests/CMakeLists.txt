@@ -113,3 +113,21 @@ add_test(
     NAME discovery_tests
     COMMAND discovery_tests
 )
+
+
+add_executable(discovery_service_tests
+    DiscoveryServiceTests.cpp
+)
+
+target_link_libraries(discovery_service_tests
+    SmartHome::Discovery
+    SmartHome::DeviceManagement
+    SmartHome::Storage
+    SmartHome::Drivers
+    SmartHome::Registry
+)
+
+add_test(
+    NAME discovery_service_tests
+    COMMAND discovery_service_tests
+)

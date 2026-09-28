@@ -42,6 +42,8 @@ std::size_t DeviceManager::restoreStoredDevices() {
             throw std::runtime_error("No factory registered for driver id = '" +
                                      record.driver_id + "' found");
         auto driver = factory->create(record);
+        if (driver == nullptr)
+            throw std::logic_error("DeviceManager: factory did not create correct driver");
         drivers_for_registration.push_back(std::move(driver));
     }
     for (auto &driver : drivers_for_registration)
