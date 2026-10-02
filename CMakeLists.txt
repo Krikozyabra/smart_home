@@ -9,6 +9,11 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 include(CTest)
 
+option(BUILD_DOCS "Сборка документации" ON)
+if(BUILD_DOCS)
+    include(cmake/Docs.cmake)
+endif()
+
 add_subdirectory(common)
 add_subdirectory(devices)
 add_subdirectory(descriptors)
