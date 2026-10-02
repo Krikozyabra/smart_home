@@ -43,7 +43,8 @@ std::size_t DeviceManager::restoreStoredDevices() {
                                      record.driver_id + "' found");
         auto driver = factory->create(record);
         if (driver == nullptr)
-            throw std::logic_error("DeviceManager: factory did not create correct driver");
+            throw std::logic_error(
+                "DeviceManager: factory did not create correct driver");
         drivers_for_registration.push_back(std::move(driver));
     }
     for (auto &driver : drivers_for_registration)
@@ -57,8 +58,8 @@ DeviceManager::registerDiscoveredDevice(const std::string &physical_id,
                                         const std::string &default_name) {
     auto *factory = factory_registry.find(driver_id);
     if (factory == nullptr)
-        throw std::invalid_argument("The driver '" + driver_id +
-                                    "' is not supported");
+        throw UnsupportedDriverError("The driver '" + driver_id +
+                                     "' is not supported");
     DeviceRecord discovered_device =
         getOrCreate(physical_id, driver_id, default_name);
     IDeviceDriver *device_driver =

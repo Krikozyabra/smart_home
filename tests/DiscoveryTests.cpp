@@ -8,7 +8,7 @@
 
 int main() {
     smart_home::SimulatedDiscoverySource empty_sds(
-        std::vector<smart_home::DiscoveredDevice>{});
+        std::vector<smart_home::DiscoveredDevice>{}, false);
     require(empty_sds.scan().size() == 0, "Initial source must be empty");
 
     std::vector<smart_home::DiscoveredDevice> devices_for_sds;
@@ -16,7 +16,7 @@ int main() {
         "SIM-LIGHT-001", "simulated.light", "New Light"});
     devices_for_sds.push_back(
         smart_home::DiscoveredDevice{"SIM-TS-001", "simulated.ts", "New TS"});
-    smart_home::SimulatedDiscoverySource full_sds(devices_for_sds);
+    smart_home::SimulatedDiscoverySource full_sds(devices_for_sds, false);
     require(devices_for_sds == full_sds.scan(),
             "Scan should return cached devices");
     smart_home::IDeviceDiscoverySource *source_interface =

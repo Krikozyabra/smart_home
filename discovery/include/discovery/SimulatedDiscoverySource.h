@@ -11,9 +11,10 @@ namespace smart_home {
 class SimulatedDiscoverySource : public IDeviceDiscoverySource {
   private:
     std::vector<DiscoveredDevice> cache;
+    bool is_error;
 
   public:
-    SimulatedDiscoverySource(std::vector<DiscoveredDevice>);
+    SimulatedDiscoverySource(std::vector<DiscoveredDevice>, bool);
 
     std::vector<DiscoveredDevice> scan() override;
 
