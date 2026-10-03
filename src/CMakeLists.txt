@@ -11,3 +11,5 @@ target_link_libraries(smart_home PRIVATE
     SmartHome::Execution
     SmartHome::Storage
 )
+
+target_link_libraries(smart_home PRIVATE SmartHome::Logging)

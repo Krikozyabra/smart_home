@@ -5,6 +5,8 @@
 #include "discovery/entities/DiscoveryReport.h"
 #include "discovery/interfaces/IDeviceDiscoverySource.h"
 
+#include "logging/Logging.h"
+
 #include <memory>
 #include <stdexcept>
 #include <utility>
@@ -24,13 +26,18 @@ DiscoveryService::DiscoveryService(
 
 DiscoveryReport DiscoveryService::scanOnce() {
     DiscoveryReport report;
+    logging::log(logging::Level::Info, "Discovery", "Discovery started.");
     for (const auto &source : sources) {
         report.sources_attempted++;
+        logging::Context context;
+        context.source_index = report.sources_attempted - 1;
+        logging::log(logging::Level::Trace, "Discovery", "Scanning source.", context);
         std::vector<DiscoveredDevice> device_list;
         try {
             device_list = source->scan();
             report.sources_succeeded++;
         } catch (const DiscoveryScanError &error) {
+            logging::log(logging::Level::Warn, "Discovery", "Source scan failed; continuing.", context);
             report.errors.push_back(DiscoveryError{DiscoveryState::Scan,
                                                    report.sources_attempted - 1,
                                                    std::nullopt, error.what()});
@@ -43,12 +50,14 @@ DiscoveryReport DiscoveryService::scanOnce() {
                     device.physical_id, device.driver_id, device.default_name);
                 report.devices_processed++;
             } catch (const UnsupportedDriverError &error) {
+                logging::log(logging::Level::Warn, "Discovery", "Unsupported driver; skipping discovered device.", context);
                 report.errors.push_back(DiscoveryError{
                     DiscoveryState::Registration, report.sources_attempted - 1,
                     device, error.what()});
             }
         }
     }
+    logging::log(logging::Level::Info, "Discovery", "Discovery completed.");
     return report;
 }
 

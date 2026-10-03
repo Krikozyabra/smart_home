@@ -15,6 +15,8 @@ if(BUILD_DOCS)
 endif()
 
 add_subdirectory(common)
+include(cmake/Spdlog.cmake)
+add_subdirectory(logging)
 add_subdirectory(devices)
 add_subdirectory(descriptors)
 add_subdirectory(drivers)

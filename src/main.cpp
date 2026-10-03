@@ -6,13 +6,16 @@
 #include "execution/CommandDispatcher.h"
 #include "registry/DeviceRegistry.h"
 
-#include <cassert>
+#include "logging/Logging.h"
+
+#include <stdexcept>
 #include <iostream>
 #include <memory>
 #include <optional>
 #include <vector>
 
-int main(int argc, char *argv[]) {
+namespace {
+int run() {
     smart_home::DeviceRegistry registry;
 
     smart_home::CommandDispatcher command_dispatcher(registry);
@@ -48,4 +51,36 @@ int main(int argc, char *argv[]) {
               << static_cast<int>(std::get<int>(*result)) << std::endl;
 
     return 0;
+}
+
+} // namespace
+
+int main(int argc, char* argv[]) {
+    namespace logging = smart_home::logging;
+    logging::Config config;
+    try {
+        config = logging::resolveConfig(argc, argv, std::cerr);
+    } catch (const std::invalid_argument& error) {
+        std::cerr << "Logging configuration error: " << error.what() << '\n';
+        return 2;
+    }
+    try {
+        logging::Session session(config);
+        logging::log(logging::Level::Info, "Main", "Application started.");
+        try {
+            const int result = run();
+            logging::log(logging::Level::Info, "Main", "Application finished.");
+            return result;
+        } catch (const std::exception&) {
+            // Exception text may contain physical addresses or private payloads.
+            logging::log(logging::Level::Critical, "Main", "Unhandled application failure; exiting.");
+            return 1;
+        } catch (...) {
+            logging::log(logging::Level::Critical, "Main", "Unknown application failure; exiting.");
+            return 1;
+        }
+    } catch (...) {
+        std::cerr << "Cannot initialize logging configuration.\n";
+        return 2;
+    }
 }

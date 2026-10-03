@@ -1,0 +1,8 @@
+add_library(smart_home_logging STATIC src/Logging.cpp src/Configuration.cpp)
+add_library(SmartHome::Logging ALIAS smart_home_logging)
+target_include_directories(smart_home_logging PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_features(smart_home_logging PUBLIC cxx_std_17)
+target_link_libraries(smart_home_logging PRIVATE spdlog::spdlog)
+if(BUILD_TESTING)
+    target_compile_definitions(smart_home_logging PRIVATE SMART_HOME_LOGGING_TESTING)
+endif()

@@ -6,6 +6,8 @@
 #include "storage/DeviceRecord.h"
 #include "storage/interfaces/IDeviceStorage.h"
 
+#include "logging/Logging.h"
+
 #include <cstddef>
 #include <memory>
 #include <optional>
@@ -49,6 +51,7 @@ std::size_t DeviceManager::restoreStoredDevices() {
     }
     for (auto &driver : drivers_for_registration)
         device_registry.add(std::move(driver));
+    logging::log(logging::Level::Info, "DeviceManager", "Stored devices restored.");
     return drivers_for_registration.size();
 }
 
@@ -71,6 +74,9 @@ DeviceManager::registerDiscoveredDevice(const std::string &physical_id,
                 "DeviceManager: factory did not create correct driver");
         device_registry.add(std::move(driver));
     }
+    logging::Context context;
+    context.device_id = discovered_device.local_id;
+    logging::log(logging::Level::Debug, "DeviceManager", "Discovered device registered.", context);
     return discovered_device;
 }
 

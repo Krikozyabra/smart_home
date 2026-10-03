@@ -131,3 +131,12 @@ add_test(
     NAME discovery_service_tests
     COMMAND discovery_service_tests
 )
+
+add_executable(logging_tests LoggingTests.cpp)
+target_include_directories(logging_tests PRIVATE ${PROJECT_SOURCE_DIR}/logging/src)
+target_link_libraries(logging_tests PRIVATE SmartHome::Logging SmartHome::Discovery
+    SmartHome::DeviceManagement SmartHome::Storage spdlog::spdlog)
+add_test(NAME logging_tests COMMAND logging_tests)
+add_test(NAME logging_cli_tests COMMAND ${CMAKE_COMMAND}
+    -DSMART_HOME_EXE=$<TARGET_FILE:smart_home>
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/LoggingCliTests.cmake)

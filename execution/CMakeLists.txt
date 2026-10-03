@@ -24,3 +24,5 @@ target_link_libraries(smart_home_execution PUBLIC
 target_compile_features(smart_home_execution PRIVATE
     cxx_std_17
 )
+
+target_link_libraries(smart_home_execution PRIVATE SmartHome::Logging)

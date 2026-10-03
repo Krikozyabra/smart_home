@@ -6,6 +6,8 @@
 #include "command/Value.h"
 #include "registry/DeviceRegistry.h"
 
+#include "logging/Logging.h"
+
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -23,6 +25,11 @@ CommandDispatcher::CommandDispatcher(DeviceRegistry &c_registry)
                {"color.set", &CommandDispatcher::executeColorSet}} {}
 
 std::optional<Value> CommandDispatcher::execute(const Command &command) {
+    logging::Context context;
+    context.device_id = command.getDeviceId();
+    const auto& operation_id = command.getOperationId();
+    context.operation = operation_id;
+    logging::log(logging::Level::Debug, "CommandDispatcher", "Dispatching command.", context);
     auto *driver = registry.find(command.getDeviceId());
     if (driver == nullptr)
         throw std::runtime_error(

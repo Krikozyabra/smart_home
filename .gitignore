@@ -21,3 +21,6 @@ CMakeUserPresets.json
 build
 .secret_git
 .cache
+
+# Runtime diagnostic logs
+/logs/
