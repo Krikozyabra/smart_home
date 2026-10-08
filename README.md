@@ -65,6 +65,127 @@ CRITICAL (фатальное завершение), OFF (отключение о
 и выше выводятся минимальным обработчиком в stderr. Инициализацией и завершением
 владеет `main`; библиотеки не меняют глобальный реестр spdlog.
 
+## MQTT-клиент
+
+Модуль `SmartHome::Mqtt` использует C++ библиотеку Mosquitto (`libmosquittopp`) и
+поддерживает MQTT 3.1.1. Для сборки нужны `pkg-config` и пакеты разработки
+`libmosquittopp` и `libmosquitto` версии 2.0 или новее. На Arch/Manjaro они входят
+в `mosquitto`; на Debian/Ubuntu установите `libmosquittopp-dev libmosquitto-dev`.
+Библиотека находится через pkg-config; для отдельной установки задайте
+`PKG_CONFIG_PATH`. Загрузка исходников при конфигурации не выполняется.
+
+Публичный интерфейс — `mqtt/interfaces/IMqttClient.h`, реализация —
+`mqtt/MosquittoClient.h`. В публичных заголовках нет типов Mosquitto.
+Клиент отправляет бинарные сообщения через `publish`, принимает их после
+`subscribe` через неблокирующий `tryRead` или `readFor` с тайм-аутом.
+Тема и данные входящего `MqttMessage` принадлежат сообщению; нулевые байты и
+пустая полезная нагрузка допустимы. Темы, форматы данных и тип брокера задаёт
+вызывающий код. Связь с драйверами и диспетчером команд пока не задаётся.
+
+```cpp
+#include "mqtt/MosquittoClient.h"
+#include <chrono>
+
+using namespace smart_home::mqtt;
+using namespace std::chrono_literals;
+
+MqttConfig config;
+config.host = "127.0.0.1"; // Замените адресом своего брокера.
+config.port = 1883;
+MosquittoClient client;
+client.connect(config); // Ожидает успешный CONNACK.
+auto subscription = client.subscribe("example/bytes", MqttQoS::AtLeastOnce);
+if (client.waitForOperation(subscription, 2s).status != MqttOperationStatus::Completed)
+    throw MqttException("Subscription failed or timed out.");
+auto publication = client.publish("example/bytes", {0, 1, 255}, MqttQoS::AtLeastOnce);
+if (!client.waitForDelivery(publication, 2s))
+    throw MqttException("Publish failed or timed out.");
+MqttMessage message;
+if (client.readFor(2s, message)) {
+    // Используйте message.topic и message.payload в потоке приложения.
+}
+client.disconnect();
+```
+
+`publish`, `subscribe` и `unsubscribe` возвращают собственный токен операции.
+Возврат означает принятие запроса библиотекой. `waitForOperation` различает
+`Pending`, `Completed`, `Rejected`, `Cancelled` и `Unknown`; для SUBACK возвращает
+разрешённый QoS. Терминальный результат читается один раз и освобождает место
+для следующей операции. После тайм-аута `Pending` токен остаётся действительным:
+ожидание можно повторить. `waitForDelivery` — сокращённая проверка `Completed`.
+Для QoS 0 это отправка, для QoS 1 — PUBACK, для QoS 2 — PUBCOMP; подтверждение
+не означает выполнение команды другим приложением. MQTT 3.1.1 не предоставляет
+отрицательный PUBACK для проверки прав публикации.
+
+`MqttConfig` задаёт обязательный host, порт, clientId, cleanSession, keepalive,
+тайм-аут CONNACK, задержки переподключения и лимиты ресурсов. По умолчанию:
+
+| Параметр | Значение |
+| --- | --- |
+| Порт / keepalive / cleanSession | 1883 / 60 с / true |
+| connectTimeout | 5 с ожидания CONNACK |
+| reconnectDelayInitial / reconnectDelayMax | 1 с / 30 с, экспоненциальный рост |
+| receiveQueueCapacity / receiveQueueBytes | 1000 сообщений / 16 МиБ темы и данных |
+| maxPayloadBytes / maxPendingPublishBytes | 16 МиБ / 16 МиБ до подтверждений |
+| maxPendingOperations | 256 токенов, включая непрочитанные результаты |
+| maxSubscriptions | 128 фильтров, включая сохранённые намерения отписки |
+
+При переполнении входящей очереди отбрасывается новое сообщение; уже принятые
+сохраняют FIFO. `droppedMessages()` показывает потери после последнего `connect`.
+Предупреждение ограничено одним сообщением за пять секунд. При превышении лимита
+исходящих операций выбрасывается `MqttException`. Обязательно читайте результаты
+всех своих токенов, включая подписки и отписки. Сетевые callback не вызывают
+пользовательский код и не выводят адреса, темы, пароли или содержимое сообщений.
+
+При потере соединения состояние становится `Connecting`; после переподключения
+повторяются подписки и намерения отписки, а библиотека может повторить публикации
+QoS 1/2. Запросы при отсутствии соединения отклоняются. Отказ CONNACK, ошибка
+авторизации, TLS или протокола прекращают автоматические попытки. После неудачного
+первоначального подключения клиент очищает транспорт; `connect` можно повторить.
+Для запущенного клиента сначала вызовите `disconnect`.
+
+Пароль задаётся через `config.username` и `config.password`. TLS включается
+через `config.tls`: необходим `caFile`, а для взаимной авторизации —
+`clientCertFile` и `clientKeyFile` без парольного шифрования. По умолчанию
+`verifyPeer=true` проверяет сертификат и имя брокера. Порт библиотеки задаётся
+явно, например 8883; включение TLS в конфигурации не переписывает порт.
+Для постоянной сессии `cleanSession=false` требуется непустой `clientId`.
+
+Методы потокобезопасны; операции управления соединением сериализованы.
+`disconnect` будит ожидающих читателей, отменяет неподтверждённые операции и
+присоединяет сетевой поток до уничтожения транспорта. Оставшиеся сообщения
+можно дочитать; следующий `connect` очищает очередь и старые токены.
+Глобальная библиотека инициализируется до создания транспорта и освобождается
+после уничтожения последнего клиента. Перед уничтожением клиента завершите
+свои потоки, обращающиеся к нему; перемещение также требует отсутствия
+одновременных вызовов. Системное разрешение DNS, TLS и присоединение потока
+могут превысить `connectTimeout`; жёсткого общего срока завершения нет.
+
+Самостоятельная демонстрация чтения и записи:
+
+```sh
+./build/bin/smart_home_mqtt_demo --host 127.0.0.1 --port 1883 --topic example/bytes --timeout 5
+./build/bin/smart_home_mqtt_demo --host mqtt.example.org --topic example/bytes --ca-file ca.pem
+```
+
+Адрес и тема обязательны. `--ca-file` включает TLS, по умолчанию на порту 8883,
+если `--port` не задан. Переменные `SMART_HOME_MQTT_USERNAME` и
+`SMART_HOME_MQTT_PASSWORD` задают необязательные учётные данные. Демонстрация
+подписывается, ожидает SUBACK, публикует бинарное сообщение, ожидает подтверждение
+и читает ответ; тайм-аут или отказ дают код 1, неправильные параметры — код 2.
+Успех даёт код 0. Для отключения сборки демонстрации:
+`-DSMART_HOME_BUILD_MQTT_DEMO=OFF`.
+
+`mqtt_tests` проверяет конфигурацию, ограничения очереди, ранние подтверждения,
+отмену операций и жизненный цикл нескольких клиентов без брокера. На UNIX при
+наличии исполняемого файла `mosquitto` дополнительно регистрируется
+`mqtt_integration_tests`: тест запускает временные брокеры только на loopback,
+проверяет QoS 0/1/2, бинарные и retained-сообщения, отписку, ограничения,
+конкурентную публикацию, переподключение и отказ авторизации. Работающий
+пользовательский брокер и интернет не требуются. Интеграционный тест имеет
+лимит CTest 60 с; отключить его можно через
+`-DSMART_HOME_MQTT_INTEGRATION_TESTS=OFF`.
+
 # Tasks
 - create DiscoveryReport
 - isolating errros

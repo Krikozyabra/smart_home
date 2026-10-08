@@ -26,6 +26,7 @@ add_subdirectory(execution)
 add_subdirectory(storage)
 add_subdirectory(device_management)
 add_subdirectory(discovery)
+add_subdirectory(mqtt)
 
 add_subdirectory(src)
 

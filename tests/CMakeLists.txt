@@ -140,3 +140,27 @@ add_test(NAME logging_tests COMMAND logging_tests)
 add_test(NAME logging_cli_tests COMMAND ${CMAKE_COMMAND}
     -DSMART_HOME_EXE=$<TARGET_FILE:smart_home>
     -P ${CMAKE_CURRENT_SOURCE_DIR}/LoggingCliTests.cmake)
+
+add_executable(mqtt_tests MqttTests.cpp)
+target_include_directories(mqtt_tests PRIVATE ${PROJECT_SOURCE_DIR}/mqtt/src)
+target_link_libraries(mqtt_tests PRIVATE SmartHome::Mqtt Threads::Threads)
+add_test(NAME mqtt_tests COMMAND mqtt_tests)
+set_tests_properties(mqtt_tests PROPERTIES TIMEOUT 15)
+
+option(SMART_HOME_MQTT_INTEGRATION_TESTS "Test MQTT against a temporary loopback broker" ON)
+if(SMART_HOME_MQTT_INTEGRATION_TESTS AND UNIX)
+    find_program(SMART_HOME_MOSQUITTO_EXECUTABLE NAMES mosquitto)
+    if(SMART_HOME_MOSQUITTO_EXECUTABLE)
+        add_executable(mqtt_integration_tests MqttIntegrationTests.cpp)
+        target_link_libraries(mqtt_integration_tests PRIVATE SmartHome::Mqtt Threads::Threads)
+        set(MQTT_DEMO_TEST_ARGUMENT)
+        if(TARGET smart_home_mqtt_demo)
+            set(MQTT_DEMO_TEST_ARGUMENT $<TARGET_FILE:smart_home_mqtt_demo>)
+        endif()
+        add_test(NAME mqtt_integration_tests
+            COMMAND mqtt_integration_tests ${SMART_HOME_MOSQUITTO_EXECUTABLE} ${MQTT_DEMO_TEST_ARGUMENT})
+        set_tests_properties(mqtt_integration_tests PROPERTIES TIMEOUT 60)
+    else()
+        message(STATUS "Mosquitto broker executable not found; MQTT integration tests are disabled.")
+    endif()
+endif()
