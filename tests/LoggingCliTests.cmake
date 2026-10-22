@@ -1,3 +1,9 @@
+string(RANDOM LENGTH 12 ALPHABET abcdef0123456789 ontology_test_id)
+set(ontology_test_dir "${CMAKE_CURRENT_BINARY_DIR}/ontology-cli-${ontology_test_id}")
+file(MAKE_DIRECTORY "${ontology_test_dir}/ram")
+set(ENV{SMART_HOME_ONTOLOGY_PATH} "${ontology_test_dir}/home.lbdb")
+set(ENV{SMART_HOME_ONTOLOGY_RAM_DIR} "${ontology_test_dir}/ram")
+set(ENV{SMART_HOME_ONTOLOGY_SYNC_SECONDS} "0")
 execute_process(COMMAND "${SMART_HOME_EXE}" --log-level=info --log-file=
     RESULT_VARIABLE status OUTPUT_VARIABLE output ERROR_VARIABLE diagnostics)
 if(NOT status EQUAL 0 OR NOT output MATCHES "Temperature is 23" OR NOT output MATCHES "New brightness is 75")
@@ -16,3 +22,17 @@ execute_process(COMMAND "${SMART_HOME_EXE}" --log-level=invalid
 if(NOT status EQUAL 2 OR NOT output STREQUAL "" OR NOT diagnostics MATCHES "Logging configuration error")
     message(FATAL_ERROR "Invalid CLI must fail before business work")
 endif()
+execute_process(COMMAND "${SMART_HOME_EXE}" --log-level=off --log-file=
+    "--ontology-path=${ontology_test_dir}/override.lbdb" --ontology-sync-seconds 0
+    RESULT_VARIABLE status OUTPUT_VARIABLE output ERROR_VARIABLE diagnostics)
+if(NOT status EQUAL 0 OR NOT EXISTS "${ontology_test_dir}/override.lbdb" OR NOT diagnostics STREQUAL "")
+    message(FATAL_ERROR "Ontology CLI override failed: ${diagnostics}")
+endif()
+foreach(invalid --ontology-sync-seconds=-1 --ontology-sync-seconds=oops --ontology-allow-disk-fallback=2 --ontology-path= --ontology-unknown=1)
+    execute_process(COMMAND "${SMART_HOME_EXE}" "${invalid}"
+        RESULT_VARIABLE status OUTPUT_VARIABLE output ERROR_VARIABLE diagnostics)
+    if(NOT status EQUAL 2 OR NOT output STREQUAL "" OR NOT diagnostics MATCHES "Ontology configuration error")
+        message(FATAL_ERROR "Invalid ontology CLI was accepted: ${invalid}")
+    endif()
+endforeach()
+file(REMOVE_RECURSE "${ontology_test_dir}")

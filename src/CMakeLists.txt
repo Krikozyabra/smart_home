@@ -10,6 +10,7 @@ target_link_libraries(smart_home PRIVATE
     SmartHome::Command
     SmartHome::Execution
     SmartHome::Storage
+    SmartHome::Ontology
 )
 
 target_link_libraries(smart_home PRIVATE SmartHome::Logging)
