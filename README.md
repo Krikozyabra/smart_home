@@ -296,6 +296,27 @@ QoS 1/2. Запросы при отсутствии соединения отк�
 лимит CTest 60 с; отключить его можно через
 `-DSMART_HOME_MQTT_INTEGRATION_TESTS=OFF`.
 
+## Ключевое слово (OOW, v1)
+
+Библиотека `SmartHome::OOW` предоставляет `WakeWordService` с внедряемыми
+`IAudioInput` и `IOOWDetector`. При уверенности от 0.80 сервис пишет
+«Запись пошла», вызывает `WakeWordCallback` и собирает ровно 10 секунд
+PCM 16 kHz / 16-bit / mono в RAM для `IntentAudioCallback`.
+Запись включает чанк активации. Калибровка проверяет ровно пять записей
+с уверенностью от 0.65 в каждой; отсутствие слова даёт
+`MissingKeywordException` с индексом записи.
+
+Это ядро первой версии: реальные адаптеры микрофона и ONNX, модели и
+дообучение предусмотрены следующим этапом. В `main` сервис пока не включён.
+Аудио и профили на диск не сохраняются. Контракты ошибок, потоков и времени
+жизни callbacks описаны в [спецификации](specs/oow/spec.md).
+
+```sh
+cmake -S . -B build
+cmake --build build --target oow_tests -j 4
+ctest --test-dir build -R oow_tests --output-on-failure
+```
+
 # Tasks
 - create DiscoveryReport
 - isolating errros
