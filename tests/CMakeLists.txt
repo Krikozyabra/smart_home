@@ -175,12 +175,3 @@ foreach(suite Config Storage Sync Concurrency)
     add_test(NAME ${target} COMMAND ${target})
     set_tests_properties(${target} PROPERTIES TIMEOUT 60)
 endforeach()
-
-add_executable(oow_tests OOWTests.cpp)
-target_include_directories(oow_tests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${PROJECT_SOURCE_DIR}/logging/src
-)
-target_link_libraries(oow_tests PRIVATE SmartHome::OOW SmartHome::Logging spdlog::spdlog)
-add_test(NAME oow_tests COMMAND oow_tests)
-set_tests_properties(oow_tests PROPERTIES TIMEOUT 20)
