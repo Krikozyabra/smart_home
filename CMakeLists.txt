@@ -29,6 +29,8 @@ add_subdirectory(ontology)
 add_subdirectory(device_management)
 add_subdirectory(discovery)
 add_subdirectory(mqtt)
+include(cmake/OnnxRuntime.cmake)
+add_subdirectory(oww)
 
 add_subdirectory(src)
 

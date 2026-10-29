@@ -296,6 +296,77 @@ QoS 1/2. Запросы при отсутствии соединения отк�
 лимит CTest 60 с; отключить его можно через
 `-DSMART_HOME_MQTT_INTEGRATION_TESTS=OFF`.
 
+## OpenWakeWord: ключевое слово «Нафаня»
+
+`SmartHome::Oww` принимает последовательные кадры по 80 мс (1280 отсчётов
+моно signed PCM16 при 16000 Гц) и возвращает вероятность ключевого слова `float`
+в `[0, 1]`. Реализован полный ONNX-пайплайн OpenWakeWord: спектрограмма,
+акустические признаки, бинарный классификатор. Python для работы модуля не нужен.
+
+Для сборки нужен ONNX Runtime C++ SDK. CMake находит установленный пакет
+`onnxruntime`; для отдельного SDK укажите
+`-DSMART_HOME_ONNXRUNTIME_DIR=/path/to/onnxruntime` или `ONNXRUNTIME_ROOT`.
+Публичный API и реализация модуля используют C++17, runtime скрыт за PIMPL.
+
+Команда из корня проекта загружает [готовую модель «Нафаня»](https://github.com/fwartner/home-assistant-wakewords-collection/tree/main/ru/nafanya)
+и две общие модели из [релиза OpenWakeWord v0.5.1](https://github.com/dscripka/openWakeWord/releases/tag/v0.5.1):
+
+```sh
+cmake -P oww/DownloadModels.cmake
+```
+
+Файлы сохраняются в `oww/models/`; можно задать `-DOWW_MODELS_DIR=/path/to/models`.
+Доступна также отдельная цель `cmake --build build --target oww_models`.
+Обычная сборка не скачивает модели. Загрузчик сохраняет существующие непустые
+файлы и не устанавливает незавершённые загрузки. Источники закреплены и перечислены
+в [oww/models/README.md](oww/models/README.md).
+
+```cpp
+#include <oww/OpenWakeWordDetector.h>
+
+using namespace smart_home::oww;
+OwwConfig config;
+config.model_path = "oww/models/nafanya.onnx";
+OpenWakeWordDetector detector(config);
+
+PcmFrame frame{}; // Вызывающий код заполняет 1280 отсчётов очередных 80 мс.
+const float probability = detector.processFrame(frame);
+```
+
+`melspec_model_path` и `embedding_model_path` в конфигурации позволяют хранить
+общие модели отдельно; пустые пути означают файлы `melspectrogram.onnx` и
+`embedding_model.onnx` рядом с классификатором. `getModelPath()` возвращает
+исходный путь к классификатору. Все три файла проверяются и загружаются при
+создании детектора. Частота отличается от 16000 Гц или число потоков меньше 1 —
+`std::invalid_argument`; повреждённый ONNX или сбой инференса —
+`std::runtime_error`. Несовместимые интерфейсы моделей также отклоняются.
+Поддерживаются бинарные классификаторы float32 `[1, N, 96]` с фиксированным
+`N` от 1 до 120 и одним выходным значением. Модель можно заменить без изменения
+модуля, если она использует этот интерфейс OpenWakeWord.
+
+Проверка длины кадра отключена по спецификации: указатель и перегрузка для
+`std::vector<int16_t>` требуют доступности 1280 отсчётов; перегрузка для
+`PcmFrame` задаёт размер типом. Контекст между кадрами сохраняется; один экземпляр
+используется для одного потока аудио последовательно. При создании весь контекст
+прогревается тишиной, буферы и тензоры переиспользуются. Число потоков инференса
+по умолчанию равно 1; активное ожидание потоков отключено. Захват микрофона,
+ресемплинг, порог срабатывания и обучение не входят в модуль.
+
+`oww_tests` работает без сети на маленьких ONNX-графах, проверяя вычисления,
+контекст, ошибки моделей и тысячи кадров. После загрузки комплекта можно
+зарегистрировать отдельную проверку обученной модели:
+
+```sh
+cmake -B build -S . -DSMART_HOME_OWW_TEST_MODEL="$PWD/oww/models/nafanya.onnx"
+cmake --build build -j
+ctest --test-dir build -R oww --output-on-failure
+```
+
+Для общих моделей в другом каталоге задаются `SMART_HOME_OWW_TEST_MELSPEC` и
+`SMART_HOME_OWW_TEST_EMBEDDING`. Smoke-тест обрабатывает 1000 кадров и проверяет
+конечность/диапазон вероятностей, но не качество распознавания. Проверка на
+записях слова «Нафаня» и замеры CPU/RAM на Raspberry Pi выполняются отдельно.
+
 # Tasks
 - create DiscoveryReport
 - isolating errros

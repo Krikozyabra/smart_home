@@ -1,0 +1,48 @@
+cmake_minimum_required(VERSION 3.20)
+
+if(NOT DEFINED OWW_MODELS_DIR)
+    set(OWW_MODELS_DIR "${CMAKE_CURRENT_LIST_DIR}/models")
+endif()
+get_filename_component(OWW_MODELS_DIR "${OWW_MODELS_DIR}" ABSOLUTE)
+file(MAKE_DIRECTORY "${OWW_MODELS_DIR}")
+
+# Pin the contribution which added the Russian model (upstream PR #72).
+# URL overrides also allow an offline mirror without changing the module.
+if(NOT DEFINED OWW_KEYWORD_URL)
+    set(OWW_KEYWORD_URL
+        "https://raw.githubusercontent.com/fwartner/home-assistant-wakewords-collection/3342878221ae06b09f46cc38a74182ac00b926df/ru/nafanya/nafanya.onnx")
+endif()
+if(NOT DEFINED OWW_FEATURES_URL)
+    set(OWW_FEATURES_URL "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1")
+endif()
+
+function(download_model filename url)
+    set(destination "${OWW_MODELS_DIR}/${filename}")
+    if(EXISTS "${destination}")
+        file(SIZE "${destination}" size)
+        if(size GREATER 0)
+            message(STATUS "Keeping existing ${destination}")
+            return()
+        endif()
+    endif()
+    message(STATUS "Downloading ${filename}")
+    file(DOWNLOAD "${url}" "${destination}.part"
+        TIMEOUT 60 INACTIVITY_TIMEOUT 20 TLS_VERIFY ON STATUS result)
+    list(GET result 0 code)
+    list(GET result 1 description)
+    if(NOT code EQUAL 0)
+        file(REMOVE "${destination}.part")
+        message(FATAL_ERROR "Could not download ${filename}: ${description}. Source: ${url}")
+    endif()
+    file(SIZE "${destination}.part" size)
+    if(size EQUAL 0)
+        file(REMOVE "${destination}.part")
+        message(FATAL_ERROR "Downloaded ${filename} is empty.")
+    endif()
+    file(RENAME "${destination}.part" "${destination}")
+endfunction()
+
+download_model(nafanya.onnx "${OWW_KEYWORD_URL}")
+download_model(melspectrogram.onnx "${OWW_FEATURES_URL}/melspectrogram.onnx")
+download_model(embedding_model.onnx "${OWW_FEATURES_URL}/embedding_model.onnx")
+message(STATUS "Models are in ${OWW_MODELS_DIR}. Run oww_model_tests to validate the ONNX pipeline.")
