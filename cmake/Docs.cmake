@@ -20,7 +20,7 @@ set(DOXYGEN_FILE_PATTERNS "*.h" "*.hpp" "*.hxx" "*.cpp" "*.md")
 
 set(DOC_INPUTS)
 foreach(MODULE common devices descriptors drivers registry command execution
-               storage device_management discovery logging mqtt ontology oww src tests)
+               storage device_management discovery logging mqtt ontology oww audio src tests)
     if(EXISTS "${PROJECT_SOURCE_DIR}/${MODULE}")
         list(APPEND DOC_INPUTS "${PROJECT_SOURCE_DIR}/${MODULE}")
     endif()
@@ -30,6 +30,8 @@ if(EXISTS "${PROJECT_SOURCE_DIR}/README.md")
     set(DOXYGEN_USE_MDFILE_AS_MAINPAGE "${PROJECT_SOURCE_DIR}/README.md")
     list(APPEND DOC_INPUTS "${PROJECT_SOURCE_DIR}/README.md")
 endif()
+
+list(APPEND DOC_INPUTS "${PROJECT_SOURCE_DIR}/specs/audio")
 
 doxygen_add_docs(docs ${DOC_INPUTS}
     COMMENT "Генерация API-документации с помощью Doxygen"

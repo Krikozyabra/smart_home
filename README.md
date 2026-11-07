@@ -371,3 +371,163 @@ ctest --test-dir build -R oww --output-on-failure
 - create DiscoveryReport
 - isolating errros
 - logging
+
+## Захват звука (audio)
+
+`SmartHome::Audio` требует Linux и ALSA development package (`libasound2-dev`
+в Debian/Raspberry Pi OS). Публичные заголовки C++17 не раскрывают ALSA;
+библиотеки ALSA, Threads и Logging подключаются приватно. Приложение не начинает
+захват автоматически. Параметры и контракты: [specs/audio/spec.md](specs/audio/spec.md).
+
+```cpp
+#include <audio/AlsaAudioCapture.h>
+#include <chrono>
+
+smart_home::audio::AudioConfig config;
+config.device_name = "default"; // Например, "hw:1,0" для конкретного устройства.
+smart_home::audio::AlsaAudioCapture microphone(config);
+auto pcm = microphone.recordFor(std::chrono::milliseconds(1000));
+// 16000 signed PCM16 отсчётов; в стерео — interleaved L, R.
+microphone.startContinuous();
+// snapshot() можно вызывать из нескольких потоков, пока приложение работает.
+auto snapshot = microphone.snapshot();
+microphone.stopContinuous(); // Пробуждает poll, присоединяет worker, повторяет ошибку.
+```
+
+По умолчанию используются 16000 Гц, Mono, кадр 80 мс (1280 отсчётов),
+кольцо 125 кадров (10 секунд, 320000 байт PCM). Настройки доступны через
+`getConfig()`. Частота и формат устанавливаются точно; преобразования возможны
+в выбранном ALSA plugin, собственного ресемплера нет. Длительность обязана
+давать целое число отсчётов на канал. Параметры и переполнения проверяются
+до выделения памяти; нехватка памяти передаётся как `bad_alloc`.
+
+Снимок содержит собственные копии полных кадров от старого к новому;
+чтение их не удаляет. При заполнении кольца перезаписывается старейший кадр.
+`sequence` начинается с нуля, `session_id` меняется при новом запуске.
+Повторный запуск во время записи не очищает кольцо; остановка повторяема.
+Разовая запись не меняет кольцо и отклоняется при занятом режиме (`logic_error`).
+Конкурирующие управляющие вызовы во время разовой записи также отклоняются.
+Новый запуск после штатной остановки очищает кольцо. Незавершённые кадры
+при остановке/ошибке отбрасываются, старые полные кадры остаются доступны.
+
+Ошибки открытия/формата, overrun, suspend и отключение дают `runtime_error`;
+потери не маскируются тишиной и не восстанавливаются автоматически.
+Без прогресса запись прекращается через 5 секунд. Остановка имеет отдельный
+дескриптор пробуждения и не ждёт этого тайм-аута. Целевые 250 мс задержки
+остановки требуют измерения на Raspberry Pi; на загруженной ОС срок не гарантирован.
+Ошибку worker можно получить через `rethrowIfFailed()` или `stopContinuous()`;
+повторное чтение её не очищает. После ошибки нужен новый экземпляр.
+Логируйте ошибку один раз на границе её обработки. Деструктор присоединяет
+поток без исключений и сообщает об оставленной без чтения ошибке; внешние
+потоки должны завершить обращения к объекту до его уничтожения.
+
+Для передачи в oww сначала проверьте настройки, затем обрабатывайте снимки
+последовательно одним потребителем. Ниже тело обработчика очередного снимка;
+`wake_config` содержит пути моделей, а `on_probability` — обработчик результата:
+
+```cpp
+#include <oww/OpenWakeWordDetector.h>
+#include <memory>
+#include <optional>
+#include <stdexcept>
+
+const auto format = microphone.getConfig();
+if (format.sample_rate_hz != 16000 ||
+    format.channels != smart_home::audio::Channels::Mono ||
+    format.frame_duration != std::chrono::milliseconds(80))
+    throw std::invalid_argument("audio format is incompatible with OWW");
+
+std::unique_ptr<smart_home::oww::OpenWakeWordDetector> detector;
+std::uint64_t session = 0;
+std::optional<std::uint64_t> last_sequence;
+auto consume = [&](const smart_home::audio::AudioSnapshot &copy) {
+    if (copy.session_id != session) {
+        session = copy.session_id;
+        last_sequence.reset();
+        detector.reset();
+    }
+    for (const auto &frame : copy.frames) {
+        if (last_sequence && frame.sequence <= *last_sequence) continue;
+        if (frame.samples.size() != smart_home::oww::FrameSamples)
+            throw std::runtime_error("incomplete OWW frame");
+        if (!detector || (last_sequence && frame.sequence != *last_sequence + 1))
+            detector = std::make_unique<smart_home::oww::OpenWakeWordDetector>(wake_config);
+        on_probability(detector->processFrame(frame.samples));
+        last_sequence = frame.sequence;
+    }
+};
+// Периодически: microphone.rethrowIfFailed(); consume(microphone.snapshot());
+// Обработка идёт вне блокировки кольца; смена сеанса/пропуск сбрасывает контекст.
+```
+
+Четыре набора `audio_*_tests` работают без микрофона и сети: проверяют размеры,
+PCM, короткие чтения и errno, тайм-аут, кольцо, ошибки и конкурентный lifecycle.
+Аппаратный тест регистрируется только с явно указанным PCM:
+
+```sh
+cmake -S . -B build -DSMART_HOME_AUDIO_TEST_DEVICE=plughw:1,0
+cmake --build build -j 4
+ctest --test-dir build -R audio --output-on-failure
+```
+
+Тест запрашивает 16000 Гц / Mono / PCM16. `hw:1,0` обращается к аппаратуре
+напрямую: если она не поддерживает один канал, настройка завершится ошибкой
+`channels=1: Invalid argument`; аналогично отклоняется неподдерживаемая частота.
+`plughw:1,0` явно разрешает преобразования каналов, частоты и формата средствами
+ALSA, сохраняя запрошенный формат на входе audio. Карта и устройство `1,0`
+в примере должны соответствовать вашему микрофону (`arecord -l`).
+См. [описание ALSA hw и plug](https://www.alsa-project.org/alsa-doc/alsa-lib/pcm_plugins.html).
+Модуль не заменяет `hw` на `plughw` автоматически. Отказ других форматов,
+качество звука, CPU/RAM, длительный захват и задержка остановки на Raspberry Pi
+проверяются отдельно. Успех без аппаратного теста не подтверждает эти свойства.
+
+### Консольная проверка микрофона и OpenWakeWord
+
+Один исполняемый файл `smart_home_audio_oww_demo` поддерживает оба режима:
+живой захват с детекцией и отдельную запись пяти секунд с последующим анализом.
+Соберите его и укажите модель ключевого слова и PCM вашего микрофона:
+
+```sh
+cmake -S . -B build -DSMART_HOME_BUILD_AUDIO_OWW_DEMO=ON
+cmake --build build --target smart_home_audio_oww_demo -j 4
+./build/bin/smart_home_audio_oww_demo \
+  --device plughw:1,0 --model oww/models/nafanya.onnx --threshold 0.5
+```
+
+Комплект моделей должен уже существовать. При необходимости явно выполните
+`cmake --build build --target oww_models` для загрузки; сам demo ничего
+не скачивает. По умолчанию `melspectrogram.onnx` и `embedding_model.onnx`
+ищутся рядом с классификатором. Другие пути задаются `--melspec FILE`
+и `--embedding FILE`. Без `--device` используется ALSA `default`.
+
+Введите команду и нажмите Enter:
+
+| Команда | Действие |
+|---|---|
+| `start` | Начать запись и непрерывную детекцию |
+| `stop` | Остановить микрофон, обработать остаток кольца, показать итог |
+| `sample` | Записать 5 секунд, затем выполнить детекцию и показать итог |
+| `help` | Показать команды |
+| `quit` | Остановить запись и выйти; EOF также завершает программу |
+
+При `sample` сначала остановите live командой `stop`. Говорить нужно после
+сообщения `Recording 5 seconds; speak now...`. Образец хранится только в RAM.
+Последние 640 отсчётов дополняются тишиной до полного кадра OWW: обрабатываются
+63 кадра. Каждая запись получает свежий контекст детектора.
+
+Консоль показывает вероятности примерно раз в секунду и `WAKE WORD detected`
+при переходе через порог, а в итоге — количество кадров, пиковую вероятность
+и число срабатываний. Порог настраивается в диапазоне `(0, 1]`; он требует
+подбора под модель и микрофон. При пропуске кадров выводится предупреждение,
+контекст детектора сбрасывается. Ошибки устройства или инференса завершают
+программу с сообщением. Программный тест проверяет связь модулей без микрофона,
+но не качество распознавания:
+
+```sh
+ctest --test-dir build -R audio_oww_demo --output-on-failure
+```
+
+Интеграционный тест регистрируется при наличии Python 3. Само приложение
+написано на C++17 и не требует Python для запуска.
+
+Спецификация сценария: [specs/audio/console-demo.md](specs/audio/console-demo.md).
