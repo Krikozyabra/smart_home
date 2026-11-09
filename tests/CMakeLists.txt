@@ -225,3 +225,18 @@ if(TARGET smart_home_audio_oww_demo)
         set_tests_properties(audio_oww_demo_tests PROPERTIES TIMEOUT 60)
     endif()
 endif()
+
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+# Same composition as production; private fault hooks exist only in this executable.
+add_executable(runtime_test_app ${PROJECT_SOURCE_DIR}/src/main.cpp)
+get_target_property(runtime_libraries smart_home LINK_LIBRARIES)
+target_link_libraries(runtime_test_app PRIVATE ${runtime_libraries})
+target_compile_definitions(runtime_test_app PRIVATE SMART_HOME_RUNTIME_TESTING=1)
+set_target_properties(runtime_test_app PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+target_compile_options(runtime_test_app PRIVATE -Wall -Wextra -Wpedantic)
+foreach(suite console persistence events failures)
+    add_test(NAME runtime_${suite}_tests
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/RuntimeTests.py
+            $<TARGET_FILE:runtime_test_app> ${suite})
+    set_tests_properties(runtime_${suite}_tests PROPERTIES TIMEOUT 120)
+endforeach()

@@ -28,3 +28,5 @@ build
 # Downloaded OpenWakeWord model weights
 /oww/models/*.onnx
 /oww/models/*.part
+
+data/
