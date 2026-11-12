@@ -49,4 +49,8 @@ std::vector<DeviceRecord> InMemoryDeviceStorage::getAll() const {
     return result;
 }
 
+void InMemoryDeviceStorage::dumpToFile(const std::string &) {
+    throw std::logic_error("InMemoryDeviceStorage does not support dumping to a file");
+}
+
 } // namespace smart_home

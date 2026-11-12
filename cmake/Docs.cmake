@@ -31,7 +31,8 @@ if(EXISTS "${PROJECT_SOURCE_DIR}/README.md")
     list(APPEND DOC_INPUTS "${PROJECT_SOURCE_DIR}/README.md")
 endif()
 
-list(APPEND DOC_INPUTS "${PROJECT_SOURCE_DIR}/specs/audio" "${PROJECT_SOURCE_DIR}/specs/runtime")
+list(APPEND DOC_INPUTS "${PROJECT_SOURCE_DIR}/specs/audio" "${PROJECT_SOURCE_DIR}/specs/runtime"
+                      "${PROJECT_SOURCE_DIR}/specs/storage")
 
 doxygen_add_docs(docs ${DOC_INPUTS}
     COMMENT "Генерация API-документации с помощью Doxygen"

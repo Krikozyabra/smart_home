@@ -1,6 +1,8 @@
 #include "storage/SQLiteDeviceStorage.h"
 #include "sqlite3.h"
 #include "storage/DeviceRecord.h"
+#include "SQLiteDump.h"
+#include "logging/Logging.h"
 
 #include <memory>
 #include <optional>
@@ -58,7 +60,8 @@ void SQLiteDeviceStorage::createSchema() {
     }
 }
 
-SQLiteDeviceStorage::SQLiteDeviceStorage(const std::string &database_path) {
+SQLiteDeviceStorage::SQLiteDeviceStorage(const std::string &database_path,
+                                       const std::string &dump_path) {
     int rc =
         sqlite3_open_v2(database_path.c_str(), &database,
                         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr);
@@ -74,6 +77,8 @@ SQLiteDeviceStorage::SQLiteDeviceStorage(const std::string &database_path) {
     }
     try {
         createSchema();
+        if (!dump_path.empty())
+            this->dump_path = storage_detail::validateDumpPath(database, dump_path).string();
     } catch (...) {
         sqlite3_close_v2(database);
         database = nullptr;
@@ -81,11 +86,26 @@ SQLiteDeviceStorage::SQLiteDeviceStorage(const std::string &database_path) {
     }
 }
 
-SQLiteDeviceStorage::~SQLiteDeviceStorage() {
+SQLiteDeviceStorage::~SQLiteDeviceStorage() noexcept {
     if (database != nullptr) {
+        if (!dump_path.empty()) {
+            try {
+                dumpToFile(dump_path);
+            } catch (const std::exception &error) {
+                logging::log(logging::Level::Error, "Storage", error.what(),
+                             {-1, "dumpToFile"});
+            } catch (...) {
+                logging::log(logging::Level::Error, "Storage", "Final SQLite dump failed",
+                             {-1, "dumpToFile"});
+            }
+        }
         sqlite3_close_v2(database);
         database = nullptr;
     }
+}
+
+void SQLiteDeviceStorage::dumpToFile(const std::string &path) {
+    storage_detail::dumpToFile(database, path);
 }
 
 std::optional<DeviceRecord>

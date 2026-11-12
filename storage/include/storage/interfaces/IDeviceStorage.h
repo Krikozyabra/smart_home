@@ -50,6 +50,19 @@ class IDeviceStorage {
      * @return Список всех сохраненных записей устройств.
      */
     virtual std::vector<DeviceRecord> getAll() const = 0;
+
+    /**
+     * @brief Синхронно сохраняет независимый снимок хранилища в файл.
+     * @param path Путь назначения; формат снимка определяется реализацией.
+     * @details Не меняет рабочее хранилище. Вызывающий код сериализует обращения
+     * к нему и обеспечивает исключительный доступ к назначению. SQLite сохраняет
+     * всю базу main атомарно; InMemoryDeviceStorage не поддерживает сохранение.
+     * @throws std::logic_error Реализация не поддерживает dump; файлы не меняются.
+     * @throws std::invalid_argument Недопустимый путь назначения.
+     * @throws std::runtime_error Ошибка сохранения; подробности гарантий и этапов
+     * публикации определяются реализацией.
+     */
+    virtual void dumpToFile(const std::string &path) = 0;
 };
 
 } // namespace smart_home

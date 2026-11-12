@@ -25,6 +25,7 @@ class SQLiteDeviceStorage final : public IDeviceStorage {
      * @brief Указатель на структуру дескриптора базы данных SQLite.
      */
     sqlite3* database = nullptr;
+    std::string dump_path;
 
     /**
      * @brief Создает схему таблиц базы данных SQLite, если она еще не создана.
@@ -35,15 +36,38 @@ class SQLiteDeviceStorage final : public IDeviceStorage {
   public:
     /**
      * @brief Инициализирует хранилище и открывает соединение с базой данных SQLite по указанному пути.
-     * @param database_path Путь к файлу базы данных SQLite на диске.
+     * @param database_path Путь к рабочей базе или :memory: для базы в RAM.
+     * @param dump_path Назначение финального атомарного dump; пустой отключает его.
+     * Относительный путь фиксируется относительно текущего каталога при создании.
+     * @throws std::invalid_argument Недопустимое назначение dump (см. dumpToFile()).
      * @throws std::runtime_error При ошибке открытия базы или создания схемы.
      */
-    explicit SQLiteDeviceStorage(const std::string &database_path);
+    explicit SQLiteDeviceStorage(const std::string &database_path,
+                                 const std::string &dump_path = {});
 
     /**
-     * @brief Деструктор, закрывающий дескриптор базы данных SQLite и освобождающий занятые ресурсы.
+     * @brief Выполняет настроенный финальный dump и закрывает соединение.
+     * @details Ошибка dump однократно сообщается через logging и не выходит
+     * исключением. Все обращения к объекту должны завершиться до уничтожения;
+     * исключительный доступ к назначению требуется до окончания деструктора.
      */
-    ~SQLiteDeviceStorage() override;
+    ~SQLiteDeviceStorage() noexcept override;
+
+    /**
+     * @brief Синхронно публикует всю базу main в самостоятельный SQLite-файл.
+     * @param path Путь назначения; родительский каталог должен существовать.
+     * @details Сохраняет схему, все таблицы, ID и AUTOINCREMENT через backup API,
+     * затем выполняет fsync файла, атомарный rename и fsync каталога (Linux).
+     * Рабочая база и настроенный путь автодампа не меняются. Вызывающий код
+     * сериализует обращения к источнику и обеспечивает исключительный доступ
+     * к назначению без открытых соединений и внешних WAL/journal-файлов.
+     * @throws std::invalid_argument Путь пуст, содержит NUL, указывает на ссылку,
+     * не обычный файл или рабочую базу, в том числе через файловый псевдоним.
+     * @throws std::runtime_error Ошибка этапа сохранения. До rename прежний файл
+     * неизменен; после rename ошибка fsync каталога означает неопределённость
+     * долговечности замены. Источник остаётся доступен, dump можно повторить.
+     */
+    void dumpToFile(const std::string &path) override;
 
     /**
      * @brief Конструктор копирования удален для предотвращения дублирования дескриптора базы данных.

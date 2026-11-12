@@ -67,6 +67,15 @@ class InMemoryDeviceStorage final : public IDeviceStorage {
      * @return Вектор всех записей DeviceRecord.
      */
     std::vector<DeviceRecord> getAll() const override;
+
+    /**
+     * @brief Сообщает, что сохранение в файл не поддерживается.
+     * @param path Путь назначения; не используется, файлы не открываются.
+     * @details Записи хранилища не меняются. Обращения к объекту сериализует
+     * вызывающий код, как и для остальных операций хранилища.
+     * @throws std::logic_error Всегда: реализация хранит данные только в RAM.
+     */
+    void dumpToFile(const std::string &path) override;
 };
 
 } // namespace smart_home

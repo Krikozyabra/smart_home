@@ -9,6 +9,42 @@ build
 # Test
 `ctest --build-dir build --output-on-failure`
 
+## Снимки SQLite storage
+
+`SQLiteDeviceStorage::dumpToFile(path)` синхронно сохраняет всю открытую
+базу `main` в самостоятельный SQLite-файл, включая дополнительные таблицы,
+локальные ID и состояние AUTOINCREMENT. Источник может находиться в RAM
+или в файле. После dump работа продолжается с исходной базой.
+Метод доступен через `IDeviceStorage`; реализация `InMemoryDeviceStorage`
+сообщает `std::logic_error`, не создавая и не меняя файлы.
+
+```cpp
+smart_home::SQLiteDeviceStorage storage(":memory:", "data/inventory.sqlite");
+storage.insert("physical-id", "driver-id", "Лампа");
+smart_home::IDeviceStorage& inventory = storage;
+inventory.dumpToFile("data/manual.sqlite"); // Явная ошибка передаётся вызывающему.
+// При уничтожении — финальный dump в data/inventory.sqlite.
+```
+
+Родительский каталог должен существовать. Необязательный второй аргумент
+конструктора задаёт путь финального dump; относительный путь фиксируется
+при создании объекта. Без него автодампа нет. Явный dump не меняет этот
+путь и не отменяет финальное сохранение. Ошибка финального dump однократно
+сообщается через logging и не выходит исключением из деструктора.
+
+На Linux используется backup API SQLite, уникальный временный файл в
+каталоге назначения, проверенное закрытие базы, `fsync` файла, атомарный
+`rename` и `fsync` каталога. До rename ошибка оставляет прежний снимок
+неизменным; ошибка после rename сообщает о неопределённости долговечности
+замены. Ссылки, не обычные файлы и файловые псевдонимы рабочей базы
+отклоняются. Вызывающий код сериализует обращения к источнику и обеспечивает
+исключительный доступ к назначению без открытых соединений и внешних
+WAL/journal-файлов. Фонового сохранения нет.
+
+Контракт: [specs/storage/spec.md](specs/storage/spec.md).
+Проверки: `ctest --test-dir build -R 'storage|sqlite_dump' --output-on-failure`.
+Отдельный dump не заменяет публикацию полного поколения runtime.
+
 ## Онтология дома (LadybugDB)
 
 Для сборки нужен готовый C/C++ SDK LadybugDB с `include/lbug.hpp` и

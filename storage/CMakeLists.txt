@@ -1,6 +1,7 @@
 add_library(smart_home_storage STATIC
     src/InMemoryDeviceStorage.cpp
     src/SQLiteDeviceStorage.cpp
+    src/SQLiteDump.cpp
 )
 
 add_library(SmartHome::Storage ALIAS smart_home_storage)
@@ -19,6 +20,8 @@ target_link_libraries(smart_home_storage PUBLIC
     SQLite3::SQLite3
     SmartHome::Common
 )
+
+target_link_libraries(smart_home_storage PRIVATE SmartHome::Logging)
 
 target_compile_features(smart_home_storage PRIVATE
     cxx_std_17

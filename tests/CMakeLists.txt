@@ -41,6 +41,13 @@ NAME sql_storage_tests
 COMMAND sql_storage_tests
 )
 
+add_executable(sqlite_dump_tests SQLiteDumpTests.cpp)
+target_include_directories(sqlite_dump_tests PRIVATE ${PROJECT_SOURCE_DIR})
+target_link_libraries(sqlite_dump_tests PRIVATE SmartHome::Storage SmartHome::Logging spdlog::spdlog)
+set_target_properties(sqlite_dump_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+add_test(NAME sqlite_dump_tests COMMAND sqlite_dump_tests)
+set_tests_properties(sqlite_dump_tests PROPERTIES TIMEOUT 30)
+
 add_executable(factories_tests
 FactoriesTests.cpp
 )
