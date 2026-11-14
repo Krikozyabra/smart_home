@@ -1,6 +1,6 @@
 # План реализации модуля device_management (Capability-Based подход)
 
-Статус: согласован со спецификацией [spec.md](spec.md) и [design.md](design.md); готов к выполнению.  
+Статус: согласован со спецификацией [spec.md](spec.md) и [design.md](design.md); реализован; результаты проверок приведены ниже.
 Основание: `specs/device_management/spec.md`, `specs/device_management/design.md`, `AGENTS.md`.
 
 ## 1. Соответствие требованиям спецификации
@@ -18,17 +18,17 @@
 
 ## 2. Последовательность работ
 
-- [ ] 1. **Обновление спецификации `specs/device_management/spec.md`**:
+- [x] 1. **Обновление спецификации `specs/device_management/spec.md`**:
   - Исключить требования к `driver_type_mapping` из DM-001, DM-004, DM-006.
   - Зафиксировать Capability-Based контракт синхронизации узлов и возможностей.
-- [ ] 2. **Сборочная конфигурация `device_management/CMakeLists.txt`**:
+- [x] 2. **Сборочная конфигурация `device_management/CMakeLists.txt`**:
   - Добавить `SmartHome::Ontology` в список `PUBLIC target_link_libraries` цели `smart_home_device_management`.
-- [ ] 3. **Публичный заголовок `device_management/include/device_management/DeviceManager.h`**:
+- [x] 3. **Публичный заголовок `device_management/include/device_management/DeviceManager.h`**:
   - Подключить `ontology/IOntologyStorage.h`.
   - Обновить сигнатуру конструктора `DeviceManager(storage, factories, devices, ontology)`.
   - Добавить приватный метод `syncDeviceOntology(record, driver)`.
   - Обновить Doxygen-документацию на русском языке.
-- [ ] 4. **Реализация `device_management/src/DeviceManager.cpp`**:
+- [x] 4. **Реализация `device_management/src/DeviceManager.cpp`**:
   - Инициализация `ontology_storage` в конструкторе.
   - Реализация `syncDeviceOntology`:
     - Проверка/создание узла устройства по имени.
@@ -40,11 +40,11 @@
     - Фаза 1: предварительное создание драйверов в `std::vector<std::unique_ptr<IDeviceDriver>>`.
     - Фаза 2: перенос в `device_registry`.
     - Фаза 3: вызов `syncDeviceOntology` для всех устройств из инвентаря.
-- [ ] 5. **Адаптация существующих компонентов и тестов**:
-  - В `tests/DeviceManagerTests.cpp` добавить тестовую онтологию (`ontology_test::Fixture`), проверить создание узлов и связей `HAS_FEATURE`.
+- [x] 5. **Адаптация существующих компонентов и тестов**:
+  - В `tests/DeviceManagerTests.cpp` добавить тестовую онтологию (`device_management_test::GraphFixture`, публичный C++17 API без SDK), проверить создание узлов и связей `HAS_FEATURE`.
   - В `tests/DiscoveryServiceTests.cpp` передать онтологию в фикстуру менеджера.
-  - В `src/main.cpp` передать `graph` в конструктор `manager`, упростить `completeGraph()` (делегировав регистрацию устройств и возможностей менеджеру).
-- [ ] 6. **Разработка полного комплекта тестов в `tests/DeviceManagerTests.cpp`**:
+  - В `src/main.cpp` передать `graph` в конструктор `manager`, заменить `completeGraph()` на подготовку каталога/комнат и назначение комнат; узлы устройств и связи дополняет менеджер. Консольные категории `light`/`temperature_sensor` остаются соглашением runtime и определяются по inventory, без поля `type` в графе. Проверка сохранённого поколения использует снимок графа до дополнения менеджером.
+- [x] 6. **Разработка полного комплекта тестов в `tests/DeviceManagerTests.cpp`**:
   - Тест 1: Первая регистрация создает запись, драйвер, узел онтологии и связи возможностей.
   - Тест 2: Повторная регистрация идемпотентна, сохраняет состояние драйвера, не дублирует узлы и связи.
   - Тест 3: Восстановление сохранённых устройств актуализирует онтологию и возвращает точное число добавленных драйверов.
@@ -58,7 +58,7 @@
   - Тест 11: Несовпадение имени в существующем узле онтологии вызывает `std::runtime_error`.
   - Тест 12: Лишние связи возможностей в онтологии вызывают `std::runtime_error`.
   - Тест 13: Частичный отказ онтологии (через тестовый mock/wrapper) позволяет завершить операцию при повторном вызове.
-- [ ] 7. **Верификация**:
+- [x] 7. **Верификация**:
   - `cmake --build build`
   - `ctest --test-dir build --output-on-failure`
   - `cmake --build build --target docs`
@@ -79,3 +79,18 @@ ctest --test-dir build --output-on-failure
 # Проверка сборки документации Doxygen
 cmake --build build --target docs
 ```
+
+## 4. Результаты верификации
+
+Проверено на рабочей машине:
+
+- `cmake --build build -j 2` — успешно, включая основной runtime.
+- `ctest --test-dir build --output-on-failure` — 29/29 наборов пройдены,
+  включая device_manager, discovery, logging и четыре набора runtime.
+- `cmake --build build --target docs` — успешно, без предупреждений Doxygen.
+- `git diff --check` — без ошибок.
+
+Тесты менеджера дополнительно проверяют произвольную возможность из дескриптора,
+частичный отказ регистрации в registry, повторную попытку и сохранение уже
+активных драйверов при ошибке подготовки остальных.
+Проверки аппаратуры Raspberry Pi не выполнялись.

@@ -613,8 +613,7 @@ void storeValues(Database &db, const States &values, Revision revision) {
     }
 }
 
-bool completeGraph(Ontology &graph, SQLiteDeviceStorage &storage,
-                   DeviceRegistry &registry) {
+bool prepareGraph(Ontology &graph) {
     bool changed = false;
     for (const auto &room :
          {ontology::RoomRecord{"living_room", "Гостиная"},
@@ -632,42 +631,42 @@ bool completeGraph(Ontology &graph, SQLiteDeviceStorage &storage,
             graph.addAbility(ability);
             changed = true;
         }
-    for (const auto &record : storage.getAll()) {
-        auto *driver = registry.find(record.local_id);
-        if (!driver)
-            throw std::runtime_error("Inventory has no active driver.");
-        if (!graph.getDevice(record.local_id)) {
-            graph.addDevice({record.local_id, record.name, type(record)});
-            changed = true;
-        }
-        if (!graph.getDeviceRoom(record.local_id)) {
-            changed = true;
-            graph.assignDeviceToRoom(record.local_id, type(record) == "light"
-                                                          ? "living_room"
-                                                          : "bathroom");
-        }
-        const auto details = graph.getDeviceDetails(record.local_id).value();
-        for (const auto &capability : driver->descriptor().getCapabilities())
-            if (std::find(details.ability_ids.begin(),
-                          details.ability_ids.end(),
-                          capability.getId()) == details.ability_ids.end()) {
-                graph.addDeviceAbility(record.local_id, capability.getId());
-                changed = true;
-            }
-    }
     return changed;
 }
 
+bool assignDefaultRooms(Ontology &graph, SQLiteDeviceStorage &storage) {
+    bool changed = false;
+    for (const auto &record : storage.getAll())
+        if (!graph.getDeviceRoom(record.local_id)) {
+            graph.assignDeviceToRoom(record.local_id, type(record) == "light"
+                                                          ? "living_room"
+                                                          : "bathroom");
+            changed = true;
+        }
+    return changed;
+}
+
+using GraphSnapshot = std::map<DeviceId, ontology::DeviceOntologyDetails>;
+
+GraphSnapshot snapshotGraph(Ontology &graph) {
+    GraphSnapshot snapshot;
+    for (const auto &device : graph.getAllDevices())
+        snapshot.emplace(device.id, graph.getDeviceDetails(device.id).value());
+    return snapshot;
+}
+
 void validateGraph(Ontology &graph, SQLiteDeviceStorage &storage,
-                   DeviceRegistry &registry) {
+                   DeviceRegistry &registry, const GraphSnapshot &snapshot) {
     const auto records = storage.getAll();
-    if (graph.getAllDevices().size() != records.size())
+    if (snapshot.size() != records.size())
         throw std::runtime_error("Graph and inventory device counts disagree.");
     for (const auto &record : records) {
-        const auto details = graph.getDeviceDetails(record.local_id);
-        if (!details || details->device.type != type(record) ||
-            details->device.name != record.name || details->room_id.empty() ||
-            !graph.getRoom(details->room_id))
+        const auto found = snapshot.find(record.local_id);
+        if (found == snapshot.end())
+            throw std::runtime_error("Graph and inventory disagree.");
+        const auto &details = found->second;
+        if (details.device.name != record.name || details.room_id.empty() ||
+            !graph.getRoom(details.room_id))
             throw std::runtime_error("Graph and inventory disagree.");
         std::vector<std::string> expected;
         auto *driver = registry.find(record.local_id);
@@ -676,7 +675,7 @@ void validateGraph(Ontology &graph, SQLiteDeviceStorage &storage,
         for (const auto &capability : driver->descriptor().getCapabilities())
             expected.push_back(capability.getId());
         std::sort(expected.begin(), expected.end());
-        if (details->ability_ids != expected)
+        if (details.ability_ids != expected)
             throw std::runtime_error(
                 "Graph capabilities disagree with driver.");
     }
@@ -924,8 +923,19 @@ int run(const Config &config) {
     DriverFactoryRegistry factories;
     factories.add(std::make_unique<SimulatedLightDriverFactory>());
     factories.add(std::make_unique<TemperatureFactory>(restored));
+    ontology::OntologyConfig graph_config;
+    graph_config.persistent_path = graph_path;
+    graph_config.ram_workspace_base = workspace.path;
+    graph_config.sync_interval = std::chrono::seconds(0);
+    graph_config.allow_disk_fallback = false;
+    Ontology graph(graph_config);
+    // Preserve committed graph contents for validation before accepting startup.
+    GraphSnapshot saved_graph;
+    if (!saved.path.empty())
+        saved_graph = snapshotGraph(graph);
+    bool initialized = prepareGraph(graph);
     DeviceRegistry registry;
-    DeviceManager manager(storage, factories, registry);
+    DeviceManager manager(storage, factories, registry, graph);
     manager.restoreStoredDevices();
     CommandDispatcher dispatcher(registry);
     for (const auto &[id, values] : restored)
@@ -935,15 +945,9 @@ int run(const Config &config) {
                 Command(id, "brightness.set", {values.brightness}));
             dispatcher.execute(Command(id, "color.set", {values.color}));
         }
-    ontology::OntologyConfig graph_config;
-    graph_config.persistent_path = graph_path;
-    graph_config.ram_workspace_base = workspace.path;
-    graph_config.sync_interval = std::chrono::seconds(0);
-    graph_config.allow_disk_fallback = false;
-    Ontology graph(graph_config);
     if (!saved.path.empty())
-        validateGraph(graph, storage, registry);
-    bool initialized = completeGraph(graph, storage, registry);
+        validateGraph(graph, storage, registry, saved_graph);
+    initialized = assignDefaultRooms(graph, storage) || initialized;
     std::vector<std::unique_ptr<IDeviceDiscoverySource>> sources;
     sources.push_back(std::make_unique<SimulatedDiscoverySource>(
         std::vector<DiscoveredDevice>{
@@ -987,7 +991,7 @@ int run(const Config &config) {
     };
     const auto prepare = [&](Reservation &reservation) {
         try {
-            validateGraph(graph, storage, registry);
+            validateGraph(graph, storage, registry, snapshotGraph(graph));
             testPoint("prepare", revision);
             auto directory =
                 std::make_unique<Directory>(workspace.path, "snapshot-");
@@ -1023,7 +1027,7 @@ int run(const Config &config) {
             std::cout << "Scan: " << report.devices_processed << " processed, "
                       << report.errors.size() << " errors\n";
             changed = storage.getAll().size() != count;
-            changed = completeGraph(graph, storage, registry) || changed;
+            changed = assignDefaultRooms(graph, storage) || changed;
         } catch (...) {
             changed = true; // A partial inventory/graph operation must never be
                             // reported as a clean scan.
@@ -1039,12 +1043,19 @@ int run(const Config &config) {
             prepare(reservation);
         }
     };
+    // Console categories are a runtime convention; ontology stores no type field.
+    const auto consoleType = [&](DeviceId id) {
+        for (const auto &record : storage.getAll())
+            if (record.local_id == id)
+                return type(record);
+        throw std::runtime_error("Graph device is absent from inventory.");
+    };
     const auto show = [&](DeviceId id) {
         const auto details = graph.getDeviceDetails(id);
         if (!details)
             throw std::invalid_argument("Unknown device ID.");
         std::cout << "Device " << id << " " << details->device.name << " "
-                  << details->device.type << " room=" << details->room_id
+                  << consoleType(id) << " room=" << details->room_id
                   << '\n';
         for (const auto &ability : details->ability_ids) {
             const auto value =
@@ -1081,7 +1092,7 @@ int run(const Config &config) {
                 for (const auto &device : graph.getAllDevices()) {
                     const auto room = graph.getDeviceRoom(device.id);
                     std::cout << "Device " << device.id << " " << device.name
-                              << " " << device.type
+                              << " " << consoleType(device.id)
                               << " room=" << (room ? room->id : "") << '\n';
                 }
                 return;
@@ -1125,7 +1136,7 @@ int run(const Config &config) {
                 if (words[1] != "light" && words[1] != "temperature_sensor")
                     throw std::invalid_argument("Unknown device type.");
                 for (const auto &device : graph.getDevicesInRoom(words[0]))
-                    if (device.type == words[1])
+                    if (consoleType(device.id) == words[1])
                         targets.push_back(device.id);
                 if (targets.empty())
                     throw std::invalid_argument("No matching devices.");

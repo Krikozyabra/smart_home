@@ -1,3 +1,4 @@
+#include "DeviceManagementTestSupport.h"
 #include "TestUtil.h"
 #include "device_management/DeviceManager.h"
 #include "discovery/DiscoveryService.h"
@@ -20,8 +21,9 @@ int main() {
         smart_home::InMemoryDeviceStorage persist_storage;
         smart_home::DriverFactoryRegistry factory_registry;
         smart_home::DeviceRegistry runtime_registry;
+        device_management_test::GraphFixture fixture;
         smart_home::DeviceManager device_manager(
-            persist_storage, factory_registry, runtime_registry);
+            persist_storage, factory_registry, runtime_registry, fixture.graph);
 
         std::vector<std::unique_ptr<smart_home::IDeviceDiscoverySource>>
             sources_list;
@@ -44,8 +46,9 @@ int main() {
         smart_home::InMemoryDeviceStorage persist_storage;
         smart_home::DriverFactoryRegistry factory_registry;
         smart_home::DeviceRegistry runtime_registry;
+        device_management_test::GraphFixture fixture;
         smart_home::DeviceManager device_manager(
-            persist_storage, factory_registry, runtime_registry);
+            persist_storage, factory_registry, runtime_registry, fixture.graph);
 
         std::vector<std::unique_ptr<smart_home::IDeviceDiscoverySource>>
             sources_list;
@@ -69,8 +72,9 @@ int main() {
         factory_registry.add(
             std::make_unique<smart_home::SimulatedLightDriverFactory>());
         smart_home::DeviceRegistry runtime_registry;
+        device_management_test::GraphFixture fixture;
         smart_home::DeviceManager device_manager(
-            persist_storage, factory_registry, runtime_registry);
+            persist_storage, factory_registry, runtime_registry, fixture.graph);
 
         std::vector<std::unique_ptr<smart_home::IDeviceDiscoverySource>>
             sources_list;
@@ -101,6 +105,8 @@ int main() {
                                         std::move(sources_list));
 
         auto report = ds.scanOnce();
+        require(fixture.graph.getAllDevices().size() == 2,
+                "Scan must synchronize the graph without duplicate nodes");
         require(runtime_registry.size() == 2,
                 "After scan not empty sources the runtime registry must change "
                 "state correctly");
@@ -136,7 +142,13 @@ int main() {
                                                             "simulated.light");
         require(sim_light_2.has_value(), "Second light should be found");
 
+        const auto first_details = fixture.graph.getDeviceDetails(sim_light_1->local_id);
         auto repeated_report = ds.scanOnce();
+        require(first_details && first_details->ability_ids ==
+                    std::vector<std::string>{"brightness", "color", "on_off"} &&
+                    fixture.graph.getDeviceDetails(sim_light_1->local_id)->ability_ids == first_details->ability_ids &&
+                    fixture.graph.getAllDevices().size() == 2,
+                "Repeated scan must preserve capability links without duplicates");
         require(
             runtime_registry.size() == 2,
             "After repeated scan the runtime registry must not change state");
@@ -184,8 +196,9 @@ int main() {
         smart_home::InMemoryDeviceStorage persist_storage;
         smart_home::DriverFactoryRegistry factory_registry;
         smart_home::DeviceRegistry runtime_registry;
+        device_management_test::GraphFixture fixture;
         smart_home::DeviceManager device_manager(
-            persist_storage, factory_registry, runtime_registry);
+            persist_storage, factory_registry, runtime_registry, fixture.graph);
 
         std::vector<std::unique_ptr<smart_home::IDeviceDiscoverySource>>
             sources_list;

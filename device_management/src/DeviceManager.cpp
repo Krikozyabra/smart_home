@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <memory>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -19,9 +20,10 @@ namespace smart_home {
 
 DeviceManager::DeviceManager(IDeviceStorage &c_storage,
                              const DriverFactoryRegistry &c_factory_registry,
-                             DeviceRegistry &c_device_registry)
+                             DeviceRegistry &c_device_registry,
+                             ontology::IOntologyStorage &c_ontology_storage)
     : storage(c_storage), factory_registry(c_factory_registry),
-      device_registry(c_device_registry) {}
+      device_registry(c_device_registry), ontology_storage(c_ontology_storage) {}
 
 DeviceRecord DeviceManager::getOrCreate(const std::string &physical_id,
                                         const std::string &driver_id,
@@ -30,6 +32,37 @@ DeviceRecord DeviceManager::getOrCreate(const std::string &physical_id,
     if (record.has_value())
         return record.value();
     return storage.insert(physical_id, driver_id, default_name);
+}
+
+void DeviceManager::syncDeviceOntology(const DeviceRecord &record,
+                                       const IDeviceDriver &driver) {
+    const auto node = ontology_storage.getDevice(record.local_id);
+    if (!node)
+        ontology_storage.addDevice({record.local_id, record.name});
+    else if (node->name != record.name)
+        throw std::runtime_error("Graph and inventory disagree for device " +
+                                 std::to_string(record.local_id) + ".");
+
+    std::set<std::string> linked;
+    for (const auto &ability :
+         ontology_storage.getDeviceAbilities(record.local_id))
+        linked.insert(ability.id);
+
+    std::set<std::string> expected;
+    for (const auto &capability : driver.descriptor().getCapabilities()) {
+        const auto &id = capability.getId();
+        expected.insert(id);
+        if (!ontology_storage.getAbility(id))
+            throw std::runtime_error("Missing capability in ontology catalog: " +
+                                     id + ".");
+        if (linked.insert(id).second)
+            ontology_storage.addDeviceAbility(record.local_id, id);
+    }
+    for (const auto &id : linked)
+        if (expected.count(id) == 0)
+            throw std::runtime_error(
+                "Graph capabilities disagree with driver for device " +
+                std::to_string(record.local_id) + ".");
 }
 
 std::size_t DeviceManager::restoreStoredDevices() {
@@ -51,6 +84,8 @@ std::size_t DeviceManager::restoreStoredDevices() {
     }
     for (auto &driver : drivers_for_registration)
         device_registry.add(std::move(driver));
+    for (const auto &record : all_records)
+        syncDeviceOntology(record, *device_registry.find(record.local_id));
     logging::log(logging::Level::Info, "DeviceManager", "Stored devices restored.");
     return drivers_for_registration.size();
 }
@@ -72,8 +107,10 @@ DeviceManager::registerDiscoveredDevice(const std::string &physical_id,
         if (driver == nullptr)
             throw std::logic_error(
                 "DeviceManager: factory did not create correct driver");
+        device_driver = driver.get();
         device_registry.add(std::move(driver));
     }
+    syncDeviceOntology(discovered_device, *device_driver);
     logging::Context context;
     context.device_id = discovered_device.local_id;
     logging::log(logging::Level::Debug, "DeviceManager", "Discovered device registered.", context);

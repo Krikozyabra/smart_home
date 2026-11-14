@@ -1,7 +1,7 @@
 # Технические решения модуля device_management
 
-Статус: согласовано со спецификацией [spec.md](spec.md); подготовлено к реализации.  
-Основание: `specs/device_management/spec.md`, `specs/README.md`, `AGENTS.md`, архитектура модулей `storage`, `registry`, `ontology` и `runtime`.  
+Статус: согласовано со спецификацией [spec.md](spec.md); реализовано.
+Основание: `specs/device_management/spec.md`, `specs/README.md`, `AGENTS.md`, архитектура модулей `storage`, `registry`, `ontology` и `runtime`.
 Целевая платформа — Linux, Raspberry Pi 4b 8/120 (SD-card), приложение C++17.
 
 ## 1. Цели, границы и концепция Capability-Based
@@ -86,7 +86,7 @@ class DeviceManager {
 4. **Синхронизация с онтологией (`syncDeviceOntology`)**:
    - Получение дескриптора активного драйвера (`driver->descriptor()`).
    - Проверка наличия узла устройства: `ontology_storage.getDevice(record.local_id)`.
-     - Если узел отсутствует: создается узел `ontology_storage.addDevice({record.local_id, record.name, ""})`.
+     - Если узел отсутствует: создается узел `ontology_storage.addDevice({record.local_id, record.name})`.
      - Если узел существует: проверяется строгое совпадение имени `node.name == record.name`. При несовпадении выбрасывается `std::runtime_error` ("Graph and inventory disagree").
    - Проверка связей с возможностями (`HAS_FEATURE`):
      - Получение текущих связей устройства из онтологии (`ontology_storage.getDeviceAbilities(record.local_id)`).
@@ -102,7 +102,7 @@ class DeviceManager {
 
 ### 3.2. Восстановление сохранённых устройств (`restoreStoredDevices`)
 1. **Чтение инвентаря**:
-   Получение всех записей `storage.getAll()`. Если список пуст, метод возвращает `0`.
+   Получение всех записей `storage.getAll()`. Пустой список проходит фазы без изменений, логирует успешный вызов и возвращает `0`.
 2. **Фаза 1: Атомарная подготовка отсутствующих драйверов**:
    Создаётся временный контейнер `std::vector<std::unique_ptr<IDeviceDriver>> prepared_drivers`.
    Для каждой записи `record`:

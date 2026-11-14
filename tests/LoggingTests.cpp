@@ -1,3 +1,4 @@
+#include "DeviceManagementTestSupport.h"
 #include "TestUtil.h"
 #include "logging/Logging.h"
 #include "Testing.h"
@@ -7,6 +8,7 @@
 #include "registry/DriverFactoryRegistry.h"
 #include "registry/DeviceRegistry.h"
 #include "device_management/DeviceManager.h"
+#include "drivers/factories/SimulatedLightDriverFactory.h"
 #include <spdlog/sinks/ostream_sink.h>
 #include <spdlog/sinks/base_sink.h>
 
@@ -199,7 +201,8 @@ void boundaries() {
     smart_home::InMemoryDeviceStorage storage;
     smart_home::DriverFactoryRegistry factories;
     smart_home::DeviceRegistry devices;
-    smart_home::DeviceManager manager(storage, factories, devices);
+    device_management_test::GraphFixture fixture;
+    smart_home::DeviceManager manager(storage, factories, devices, fixture.graph);
     std::vector<std::unique_ptr<smart_home::IDeviceDiscoverySource>> sources;
     sources.push_back(std::make_unique<smart_home::SimulatedDiscoverySource>(std::vector<smart_home::DiscoveredDevice>{}, true));
     sources.push_back(std::make_unique<smart_home::SimulatedDiscoverySource>(std::vector<smart_home::DiscoveredDevice>{{"PRIVATE-ADDRESS", "missing", "name"}}, false));
@@ -212,10 +215,41 @@ void boundaries() {
     catch (const std::invalid_argument&) { logging::log(logging::Level::Critical, "Main", "Fatal operation failure."); }
     require(occurrences(output.str(), "[critical]") == 1 && output.str().find("[error]") == std::string::npos, "propagated error logged once");
 }
+void deviceManagerDiagnostics() {
+    device_management_test::GraphFixture fixture;
+    smart_home::InMemoryDeviceStorage storage;
+    smart_home::DriverFactoryRegistry factories;
+    factories.add(std::make_unique<smart_home::SimulatedLightDriverFactory>());
+    smart_home::DeviceRegistry devices;
+    smart_home::DeviceManager manager(storage, factories, devices, fixture.graph);
+    logging::Config config;
+    config.file_path.clear();
+    config.level = logging::Level::Debug;
+    logging::Session session(config);
+    std::ostringstream output;
+    logging::installTestSink(std::make_shared<spdlog::sinks::ostream_sink_mt>(output));
+    manager.restoreStoredDevices();
+    const auto record = manager.registerDiscoveredDevice("PRIVATE-ADDRESS", "simulated.light", "Saved");
+    manager.registerDiscoveredDevice("PRIVATE-ADDRESS", "simulated.light", "Ignored");
+    require(occurrences(output.str(), "[info]") == 1 &&
+                occurrences(output.str(), "[debug]") == 2 &&
+                output.str().find("device=" + std::to_string(record.local_id)) != std::string::npos &&
+                output.str().find("PRIVATE-ADDRESS") == std::string::npos,
+            "Successful manager calls must log their level and safe device context");
+    const auto success_logs = output.str();
+    fixture.graph.addDevice({record.local_id, "Wrong name"});
+    expectException<std::runtime_error>([&] { manager.restoreStoredDevices(); });
+    expectException<std::runtime_error>([&] {
+        manager.registerDiscoveredDevice("PRIVATE-ADDRESS", "simulated.light", "Ignored");
+    });
+    require(output.str() == success_logs,
+            "Propagated manager failures must not log errors or successful completion");
+}
 } // namespace
 int main() {
     configuration();
     lifecycleAndLevels();
     files();
     boundaries();
+    deviceManagerDiagnostics();
 }
