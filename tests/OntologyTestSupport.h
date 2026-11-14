@@ -55,8 +55,8 @@ template<class F> void rawDatabase(const fs::path& path, F operation) {
 inline void seed(LadybugOntologyStorage& storage) {
     storage.addRoom({"living_room", "Гостиная"});
     storage.addRoom({"bathroom", "Ванная"});
-    storage.addDevice({0, "Light", "light"});
-    storage.addDevice({1, "Temperature", "sensor"});
+    storage.addDevice({0, "Light"});
+    storage.addDevice({1, "Temperature"});
     storage.addAbility({"brightness", "Яркость", "lighting"});
     storage.addAbility({"temperature", "Температура", "climate"});
     storage.assignDeviceToRoom(0, "living_room");

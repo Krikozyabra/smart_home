@@ -4,6 +4,11 @@
 Основание: `specs/ontology/spec.md`, `specs/device_management/spec.md`, `specs/device_management/design.md`, `AGENTS.md`.  
 Целевая платформа — Linux, Raspberry Pi 4b 8/120 (SD-card), публичный API C++17, внутренняя реализация на LadybugDB C++ SDK.
 
+Модель без статического типа реализована в ontology. Интеграция с
+`DeviceManager` и адаптация runtime отложены по указанию пользователя;
+раздел 4 описывает целевое взаимодействие. Текущий `src/main.cpp` ещё использует
+старый контракт и не изменяется в рамках этой работы.
+
 ## 1. Цели, границы и концепция Capability-Based
 
 Модуль `ontology` инкапсулирует графовую базу данных LadybugDB для представления семантической топологии комнат, устройств и возможностей умного дома, а также связей между ними.
@@ -97,6 +102,11 @@ CREATE NODE TABLE abilities(id STRING, name STRING, category STRING, PRIMARY KEY
 CREATE REL TABLE LOCATED_IN(FROM devices TO rooms);
 CREATE REL TABLE HAS_FEATURE(FROM devices TO abilities);
 ```
+
+Проверка схемы требует точного совпадения полей и первичных ключей.
+Старая таблица `devices(id, name, type)` несовместима: открытие завершается
+ошибкой с требованием явной миграции, без автоматического удаления `type`
+или замены постоянного файла.
 
 ### Основные операции Cypher
 1. **Добавление/обновление устройства**:

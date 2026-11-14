@@ -29,11 +29,13 @@ int main(int argc, char* argv[]) {
             clients.emplace_back([&, index] {
                 try {
                     for (int iteration = 0; iteration < 15; ++iteration) {
-                        storage.addDevice({100 + index, "Concurrent", "sensor"});
+                        storage.addDevice({100 + index, "Concurrent"});
                         storage.assignDeviceToRoom(100 + index, "bathroom");
                         storage.addDeviceAbility(100 + index, "temperature");
                         const auto details = storage.getDeviceDetails(100 + index);
-                        require(details && details->room_id == "bathroom" && details->ability_ids.size() == 1, "concurrent details");
+                        require(details && details->device == OntologyDeviceRecord{100 + index, "Concurrent"} &&
+                                details->room_id == "bathroom" && details->ability_ids == std::vector<std::string>{"temperature"},
+                                "concurrent details");
                     }
                 } catch (...) { ++errors; }
             });

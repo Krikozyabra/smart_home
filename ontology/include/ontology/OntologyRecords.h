@@ -13,13 +13,14 @@ struct RoomRecord {
     /** @brief Сравнивает все поля. @param other Другая запись. @return Равенство записей. */
     bool operator==(const RoomRecord& other) const noexcept { return id == other.id && name == other.name; }
 };
-/** @brief Устройство; ключ совпадает с локальным DeviceId реестра. */
+/** @brief Устройство; ключ совпадает с локальным DeviceId реестра.
+ * @details Назначение устройства определяется связями с возможностями, а не статическим типом.
+ */
 struct OntologyDeviceRecord {
     DeviceId id; ///< Локальный ключ.
     std::string name; ///< Название.
-    std::string type; ///< Тип устройства.
     /** @brief Сравнивает все поля. @param other Другая запись. @return Равенство записей. */
-    bool operator==(const OntologyDeviceRecord& other) const noexcept { return id == other.id && name == other.name && type == other.type; }
+    bool operator==(const OntologyDeviceRecord& other) const noexcept { return id == other.id && name == other.name; }
 };
 /** @brief Возможность с ключом CapabilityDescriptor::getId(). */
 struct AbilityRecord {
@@ -31,7 +32,7 @@ struct AbilityRecord {
 };
 /** @brief Согласованный снимок устройства и его связей. */
 struct DeviceOntologyDetails {
-    OntologyDeviceRecord device; ///< Запись устройства.
+    OntologyDeviceRecord device; ///< Локальный ключ и название устройства.
     std::string room_id; ///< Ключ комнаты; пустой при отсутствии связи.
     std::vector<std::string> ability_ids; ///< Отсортированные ключи возможностей.
 };

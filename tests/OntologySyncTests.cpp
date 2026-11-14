@@ -57,6 +57,9 @@ int main() {
             LadybugOntologyStorage reopened(fixture.config);
             require(reopened.getAllRooms().size() == 5 && Access::runtimePath(reopened) != runtime, "startup copies authoritative disk");
             require(!fs::exists(fixture.root / ".home.lbdb.tmp_ABC123"), "stale snapshot cleanup");
+            const auto details = reopened.getDeviceDetails(0).value();
+            require(details.device == OntologyDeviceRecord{0, "Light"} && details.room_id == "living_room" &&
+                    details.ability_ids == std::vector<std::string>{"brightness"}, "snapshot restores two-field device and links");
             reopened.addRoom({"destructor", "Final fallback"});
         }
         {

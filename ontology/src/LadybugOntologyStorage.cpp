@@ -36,7 +36,7 @@ std::string text(Tuple& row, std::size_t column) {
 template<class Record> Record record(Tuple& row);
 template<> RoomRecord record(Tuple& row) { return {text(row, 0), text(row, 1)}; }
 template<> OntologyDeviceRecord record(Tuple& row) {
-    return {row.getValue(0)->getValue<std::int64_t>(), text(row, 1), text(row, 2)};
+    return {row.getValue(0)->getValue<std::int64_t>(), text(row, 1)};
 }
 template<> AbilityRecord record(Tuple& row) { return {text(row, 0), text(row, 1), text(row, 2)}; }
 } // namespace
@@ -216,7 +216,7 @@ private:
         if (fresh) {
             transaction([&] {
                 query("CREATE NODE TABLE rooms(id STRING, name STRING, PRIMARY KEY(id))");
-                query("CREATE NODE TABLE devices(id INT64, name STRING, type STRING, PRIMARY KEY(id))");
+                query("CREATE NODE TABLE devices(id INT64, name STRING, PRIMARY KEY(id))");
                 query("CREATE NODE TABLE abilities(id STRING, name STRING, category STRING, PRIMARY KEY(id))");
                 query("CREATE REL TABLE LOCATED_IN(FROM devices TO rooms)");
                 query("CREATE REL TABLE HAS_FEATURE(FROM devices TO abilities)");
@@ -241,7 +241,6 @@ private:
             }
             std::map<std::string, std::pair<std::string, bool>> wanted{
                 {"id", {table == "devices" ? "INT64" : "STRING", true}}, {"name", {"STRING", false}}};
-            if (table == "devices") wanted.emplace("type", std::make_pair("STRING", false));
             if (table == "abilities") wanted.emplace("category", std::make_pair("STRING", false));
             if (properties != wanted) throw std::runtime_error("Incompatible ontology properties; explicit migration required.");
         }
@@ -344,7 +343,7 @@ std::optional<RoomRecord> LadybugOntologyStorage::getDeviceRoom(DeviceId device_
 std::vector<OntologyDeviceRecord> LadybugOntologyStorage::getDevicesInRoom(const std::string& room_id) const {
     ONTOLOGY_GUARD;
     nonempty(room_id); impl_->endpoint("rooms", room_id);
-    return impl_->records<OntologyDeviceRecord>("MATCH (d:devices)-[:LOCATED_IN]->(r:rooms) WHERE r.id = $id RETURN d.id, d.name, d.type ORDER BY d.id", {{"id", room_id}});
+    return impl_->records<OntologyDeviceRecord>("MATCH (d:devices)-[:LOCATED_IN]->(r:rooms) WHERE r.id = $id RETURN d.id, d.name ORDER BY d.id", {{"id", room_id}});
 }
 void LadybugOntologyStorage::addDeviceAbility(DeviceId device_id, const std::string& ability_id) {
     ONTOLOGY_GUARD;
@@ -372,12 +371,12 @@ std::vector<AbilityRecord> LadybugOntologyStorage::getDeviceAbilities(DeviceId d
 std::vector<OntologyDeviceRecord> LadybugOntologyStorage::getDevicesWithAbility(const std::string& ability_id) const {
     ONTOLOGY_GUARD;
     nonempty(ability_id); impl_->endpoint("abilities", ability_id);
-    return impl_->records<OntologyDeviceRecord>("MATCH (d:devices)-[:HAS_FEATURE]->(a:abilities) WHERE a.id = $id RETURN d.id, d.name, d.type ORDER BY d.id", {{"id", ability_id}});
+    return impl_->records<OntologyDeviceRecord>("MATCH (d:devices)-[:HAS_FEATURE]->(a:abilities) WHERE a.id = $id RETURN d.id, d.name ORDER BY d.id", {{"id", ability_id}});
 }
 std::optional<DeviceOntologyDetails> LadybugOntologyStorage::getDeviceDetails(DeviceId device_id) const {
     ONTOLOGY_GUARD;
     validId(device_id);
-    const auto devices = impl_->records<OntologyDeviceRecord>("MATCH (d:devices) WHERE d.id = $id RETURN d.id, d.name, d.type", {{"id", device_id}});
+    const auto devices = impl_->records<OntologyDeviceRecord>("MATCH (d:devices) WHERE d.id = $id RETURN d.id, d.name", {{"id", device_id}});
     if (devices.empty()) return std::nullopt;
     DeviceOntologyDetails details{devices.front(), {}, {}};
     auto rooms = impl_->records<RoomRecord>("MATCH (d:devices)-[:LOCATED_IN]->(r:rooms) WHERE d.id = $id RETURN r.id, r.name", {{"id", device_id}});
@@ -442,21 +441,21 @@ bool LadybugOntologyStorage::deleteRoom(const std::string& room_id) {
 
 void LadybugOntologyStorage::addDevice(const OntologyDeviceRecord& device) {
     ONTOLOGY_GUARD;
-    validId(device.id); nonempty(device.name); nonempty(device.type);
+    validId(device.id); nonempty(device.name);
     impl_->transaction([&] {
-        impl_->query("MERGE (n:devices {id: $id}) SET n.name = $name, n.type = $extra", {{"id", device.id}, {"name", device.name}, {"extra", device.type}});
+        impl_->query("MERGE (n:devices {id: $id}) SET n.name = $name", {{"id", device.id}, {"name", device.name}});
     });
 }
 std::optional<OntologyDeviceRecord> LadybugOntologyStorage::getDevice(DeviceId id) const {
     ONTOLOGY_GUARD;
     validId(id);
-    auto values = impl_->records<OntologyDeviceRecord>("MATCH (n:devices) WHERE n.id = $id RETURN n.id, n.name, n.type", {{"id", id}});
+    auto values = impl_->records<OntologyDeviceRecord>("MATCH (n:devices) WHERE n.id = $id RETURN n.id, n.name", {{"id", id}});
     if (values.empty()) return std::nullopt;
     return values.front();
 }
 std::vector<OntologyDeviceRecord> LadybugOntologyStorage::getAllDevices() const {
     ONTOLOGY_GUARD;
-    return impl_->records<OntologyDeviceRecord>("MATCH (n:devices) RETURN n.id, n.name, n.type ORDER BY n.id");
+    return impl_->records<OntologyDeviceRecord>("MATCH (n:devices) RETURN n.id, n.name ORDER BY n.id");
 }
 bool LadybugOntologyStorage::deleteDevice(DeviceId id) {
     ONTOLOGY_GUARD;

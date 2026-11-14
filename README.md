@@ -67,7 +67,7 @@ cmake --build build --target docs
 с `flock`, атомарным `rename` и `fsync`. Кросс-компиляция пока не поддерживается.
 
 `SmartHome::Ontology` содержит узлы `rooms(id STRING, name STRING)`,
-`devices(id INT64, name STRING, type STRING)` и
+`devices(id INT64, name STRING)` и
 `abilities(id STRING, name STRING, category STRING)` с первичными ключами `id`.
 Связи направлены от устройств: `LOCATED_IN -> rooms`, `HAS_FEATURE -> abilities`.
 Устройство может находиться только в одной комнате; переназначение выполняется
@@ -75,6 +75,13 @@ cmake --build build --target docs
 Методы `addRoom`, `addDevice`, `addAbility` создают либо обновляют свойства узла,
 сохраняя его связи. Удаление узла удаляет его связи, но сохраняет соседние узлы.
 Списки возвращаются в порядке ключей. Значения передаются параметрами Cypher.
+
+У устройства нет статического поля типа: его функции определяют связи
+`HAS_FEATURE`, а `getDevicesWithAbility()` выбирает устройства по возможности.
+Старые базы с `devices.type` отклоняются с требованием явной миграции;
+автоматического изменения или пересоздания схемы нет.
+Адаптация runtime к новому контракту отложена: текущий `src/main.cpp`
+ещё использует удалённое поле и требует отдельного обновления перед сборкой приложения.
 
 Ключ устройства совпадает с локальным `DeviceId`; ключ возможности совпадает с
 `CapabilityDescriptor::getId()` (`on_off`, `brightness`, `color`, `temperature`).
