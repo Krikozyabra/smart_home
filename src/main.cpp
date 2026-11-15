@@ -924,9 +924,8 @@ int run(const Config &config) {
     factories.add(std::make_unique<SimulatedLightDriverFactory>());
     factories.add(std::make_unique<TemperatureFactory>(restored));
     ontology::OntologyConfig graph_config;
-    graph_config.persistent_path = graph_path;
+    graph_config.database_path = graph_path;
     graph_config.ram_workspace_base = workspace.path;
-    graph_config.sync_interval = std::chrono::seconds(0);
     graph_config.allow_disk_fallback = false;
     Ontology graph(graph_config);
     // Preserve committed graph contents for validation before accepting startup.
@@ -997,8 +996,7 @@ int run(const Config &config) {
                 std::make_unique<Directory>(workspace.path, "snapshot-");
             storeValues(database, capture(storage, dispatcher), revision);
             database.backup(directory->path / "state.sqlite");
-            graph.sync();
-            fs::copy_file(graph_path, directory->path / "ontology.lbdb");
+            graph.dumpToFile((directory->path / "ontology.lbdb").string());
             writeFile(directory->path / "metadata",
                       metadata(directory->path, revision));
             reservation.submit({std::move(directory), revision});

@@ -172,7 +172,7 @@ if(SMART_HOME_MQTT_INTEGRATION_TESTS AND UNIX)
     endif()
 endif()
 
-foreach(suite Config Storage Sync Concurrency)
+foreach(suite Config Storage Dump Concurrency)
     string(TOLOWER "${suite}" suite_lower)
     set(target "ontology_${suite_lower}_tests")
     add_executable(${target} Ontology${suite}Tests.cpp)

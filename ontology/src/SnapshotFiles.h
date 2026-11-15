@@ -15,6 +15,8 @@ private:
     int fd_;
 };
 std::filesystem::path canonicalDestination(const std::string& path);
+std::filesystem::path validateDumpDestination(const std::string& path,
+    const std::filesystem::path& runtime, const std::filesystem::path& database);
 int acquireLock(const std::filesystem::path& destination);
 std::filesystem::path makeWorkspace(const std::filesystem::path& base, std::uintmax_t minimumFree);
 void removeStaleSnapshots(const std::filesystem::path& destination);

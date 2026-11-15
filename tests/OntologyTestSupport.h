@@ -27,9 +27,9 @@ struct Fixture {
         if (!directory) throw std::runtime_error("Cannot create test fixture");
         root = directory;
         fs::create_directory(root / "ram");
-        config.persistent_path = (root / "home.lbdb").string();
+        config.database_path = (root / "home.lbdb").string();
+        config.dump_path = config.database_path;
         config.ram_workspace_base = (root / "ram").string();
-        config.sync_interval = std::chrono::seconds(0);
     }
     ~Fixture() { std::error_code error; fs::remove_all(root, error); }
 };
@@ -67,10 +67,10 @@ inline void seed(LadybugOntologyStorage& storage) {
 // Inspect a COPY of the durable snapshot without violating the owner's writer lock.
 inline std::vector<RoomRecord> persistedRooms(Fixture& fixture) {
     const auto copy = fixture.root / "inspection.lbdb";
-    fs::copy_file(fixture.config.persistent_path, copy, fs::copy_options::overwrite_existing);
+    fs::copy_file(fixture.config.database_path, copy, fs::copy_options::overwrite_existing);
     auto config = fixture.config;
-    config.persistent_path = copy.string();
-    config.sync_interval = std::chrono::seconds(0);
+    config.database_path = copy.string();
+    config.dump_path.clear();
     LadybugOntologyStorage reader(config);
     auto result = reader.getAllRooms();
     reader.close();

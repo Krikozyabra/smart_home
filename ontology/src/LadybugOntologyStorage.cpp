@@ -3,12 +3,10 @@
 #include "logging/Logging.h"
 #include <lbug.hpp>
 #include <algorithm>
-#include <condition_variable>
 #include <exception>
 #include <map>
 #include <mutex>
 #include <stdexcept>
-#include <thread>
 #include <unordered_map>
 #include <variant>
 
@@ -46,7 +44,7 @@ public:
     explicit Impl(OntologyConfig input) : config(std::move(input)) {
         validateConfig(config);
         try {
-            durable = detail::canonicalDestination(config.persistent_path);
+            durable = detail::canonicalDestination(config.database_path);
             lock.reset(detail::acquireLock(durable));
             detail::removeStaleSnapshots(durable);
             const auto existingSize = fs::exists(durable) ? fs::file_size(durable) : 0;
@@ -55,13 +53,15 @@ public:
             // Reserve room for the source, checkpoint growth, WAL and shadow files.
             const auto reserve = std::max<std::uintmax_t>(64 * 1024 * 1024, existingSize * 3);
             try {
-                workspace = detail::makeWorkspace(config.ram_workspace_base, reserve);
+                workspace = detail::makeWorkspace(fs::absolute(config.ram_workspace_base), reserve);
             } catch (...) {
                 if (!config.allow_disk_fallback) throw;
                 workspace = detail::makeWorkspace(durable.parent_path(), reserve);
                 logging::log(logging::Level::Warn, "Ontology", "RAM workspace unavailable; using explicitly enabled disk workspace.");
             }
             runtime = workspace / "workspace.lbdb";
+            if (!config.dump_path.empty())
+                config.dump_path = detail::validateDumpDestination(config.dump_path, runtime, durable).string();
             if (fs::exists(durable)) {
                 // Only the engine can recover sidecars. Never discard a WAL or
                 // take a .lbdb-only copy of an interrupted database.
@@ -76,11 +76,8 @@ public:
             }
             openEngine(runtime);
             schema(!fs::exists(durable));
-            if (!fs::exists(durable)) {
-                dirty = true;
-                syncLocked(true);
-            }
-            if (config.sync_interval.count() > 0) worker = std::thread([this] { workerLoop(); });
+            if (!fs::exists(durable) && !config.dump_path.empty())
+                dumpLocked(config.dump_path, true);
         } catch (...) {
             closeEngine();
             cleanupWorkspace();
@@ -138,7 +135,6 @@ public:
         try {
             operation();
             query("COMMIT");
-            dirty = true;
         } catch (...) {
             const auto failure = std::current_exception();
             try { query("ROLLBACK"); }
@@ -147,39 +143,32 @@ public:
         }
     }
 
-    void sync() {
+    void dumpToFile(const std::string& path) {
         std::lock_guard<std::mutex> guard(transactionMutex);
         requireOpen();
-        syncLocked(true);
+        dumpLocked(path, true);
     }
 
     void close() {
         std::lock_guard<std::mutex> lifecycleGuard(closeMutex);
-        {
-            std::lock_guard<std::mutex> guard(workerMutex);
-            stop = true;
-        }
-        workerCondition.notify_all();
-        if (worker.joinable()) worker.join(); // Never join while holding transactionMutex.
         std::lock_guard<std::mutex> guard(transactionMutex);
         if (closed) return;
-        // A failed reopen still leaves a checkpointed RAM file which close can
-        // save. No subsequent query is accepted in that state.
-        syncLocked(false);
+        // A failed reopen leaves a checkpointed RAM file which close can save.
+        if (!config.dump_path.empty()) {
+            try { dumpLocked(config.dump_path, false); }
+            catch (const std::invalid_argument& error) {
+                throw std::runtime_error("Final ontology dump failed: " + std::string(error.what()));
+            }
+        }
         closeEngine();
-        closed = true;
         cleanupWorkspace();
         lock.reset();
+        closed = true;
     }
 
     mutable std::mutex transactionMutex;
     detail::SnapshotHook snapshotHook;
     fs::path runtime;
-    std::mutex workerMutex;
-    std::condition_variable workerCondition;
-    bool requested = false;
-    std::size_t attempts = 0;
-    std::thread worker;
 
 private:
     lbug::main::SystemConfig engineConfig() const {
@@ -257,16 +246,15 @@ private:
             throw std::runtime_error("Incompatible ontology: duplicate or ambiguous relationships.");
     }
 
-    void syncLocked(bool reopen) {
-        if (!dirty) return;
+    void dumpLocked(const std::string& path, bool reopen) {
+        const auto destination = detail::validateDumpDestination(path, runtime, durable);
         if (connection) {
             query("CHECKPOINT");
             closeEngine(); // No connection, transaction or background engine work can change the snapshot.
         }
         std::exception_ptr failure;
         try {
-            detail::atomicSnapshot(runtime, durable, snapshotHook);
-            dirty = false;
+            detail::atomicSnapshot(runtime, destination, snapshotHook);
         } catch (...) { failure = std::current_exception(); }
         if (reopen || failure) {
             try {
@@ -280,21 +268,6 @@ private:
         if (failure) std::rethrow_exception(failure);
     }
 
-    void workerLoop() noexcept {
-        std::unique_lock<std::mutex> guard(workerMutex);
-        while (!stop) {
-            workerCondition.wait_for(guard, config.sync_interval, [&] { return stop || requested; });
-            if (stop) break;
-            requested = false;
-            guard.unlock();
-            try { sync(); }
-            catch (...) { logging::log(logging::Level::Error, "Ontology", "Periodic snapshot failed; retrying at next interval."); }
-            guard.lock();
-            ++attempts;
-            workerCondition.notify_all();
-        }
-    }
-
     OntologyConfig config;
     fs::path durable;
     fs::path workspace;
@@ -302,14 +275,12 @@ private:
     std::unique_ptr<lbug::main::Database> database;
     std::unique_ptr<lbug::main::Connection> connection;
     std::mutex closeMutex;
-    bool stop = false;
     bool closed = false;
-    bool dirty = false;
 };
 
 LadybugOntologyStorage::LadybugOntologyStorage(OntologyConfig config) : impl_(std::make_unique<Impl>(std::move(config))) {}
 LadybugOntologyStorage::~LadybugOntologyStorage() noexcept = default;
-void LadybugOntologyStorage::sync() { impl_->sync(); }
+void LadybugOntologyStorage::dumpToFile(const std::string& path) { impl_->dumpToFile(path); }
 void LadybugOntologyStorage::close() { impl_->close(); }
 
 // Every public operation owns the transaction mutex until all result values have
@@ -395,18 +366,6 @@ fs::path OntologyTestAccess::runtimePath(const LadybugOntologyStorage& storage) 
     std::lock_guard<std::mutex> guard(storage.impl_->transactionMutex);
     return storage.impl_->runtime;
 }
-namespace {
-template<class Impl> void waitForAttempt(Impl& impl, bool trigger) {
-    std::unique_lock<std::mutex> guard(impl.workerMutex);
-    if (!impl.worker.joinable()) throw std::logic_error("Periodic worker is not running.");
-    const auto next = impl.attempts + 1;
-    if (trigger) { impl.requested = true; impl.workerCondition.notify_all(); }
-    if (!impl.workerCondition.wait_for(guard, std::chrono::seconds(10), [&] { return impl.attempts >= next; }))
-        throw std::runtime_error("Periodic sync timed out.");
-}
-} // namespace
-void OntologyTestAccess::triggerPeriodicSync(LadybugOntologyStorage& storage) { waitForAttempt(*storage.impl_, true); }
-void OntologyTestAccess::waitForPeriodicSync(LadybugOntologyStorage& storage) { waitForAttempt(*storage.impl_, false); }
 } // namespace detail
 
 // Node CRUD implementations follow below.

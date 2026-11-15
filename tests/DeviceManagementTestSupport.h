@@ -32,9 +32,8 @@ struct TemporaryDirectory {
 
 inline OntologyConfig config(const fs::path &root) {
     OntologyConfig result;
-    result.persistent_path = (root / "ontology.lbdb").string();
+    result.database_path = (root / "ontology.lbdb").string();
     result.ram_workspace_base = (root / "ram").string();
-    result.sync_interval = std::chrono::seconds(0);
     return result;
 }
 

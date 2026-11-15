@@ -21,7 +21,7 @@ using device_management_test::GraphFixture;
 class ObservedGraph final : public IOntologyStorage {
     IOntologyStorage &graph;
 public:
-    int nodes_added = 0, links_added = 0, sync_calls = 0, close_calls = 0;
+    int nodes_added = 0, links_added = 0, dump_calls = 0, close_calls = 0;
     int links_before_failure = -1;
     explicit ObservedGraph(IOntologyStorage &value) : graph(value) {}
     void addRoom(const RoomRecord &r) override { graph.addRoom(r); }
@@ -53,7 +53,7 @@ public:
     std::vector<AbilityRecord> getDeviceAbilities(DeviceId id) const override { return graph.getDeviceAbilities(id); }
     std::vector<OntologyDeviceRecord> getDevicesWithAbility(const std::string &id) const override { return graph.getDevicesWithAbility(id); }
     std::optional<DeviceOntologyDetails> getDeviceDetails(DeviceId id) const override { return graph.getDeviceDetails(id); }
-    void sync() override { ++sync_calls; throw std::logic_error("Manager must not sync"); }
+    void dumpToFile(const std::string&) override { ++dump_calls; throw std::logic_error("Manager must not dump"); }
     void close() override { ++close_calls; throw std::logic_error("Manager must not close"); }
 };
 
@@ -140,7 +140,7 @@ void registrationAndRepair() {
         manager.registerDiscoveredDevice("a", "test.driver", "Ignored");
         f.complete(record);
     }
-    require(f.graph.sync_calls == 0 && f.graph.close_calls == 0,
+    require(f.graph.dump_calls == 0 && f.graph.close_calls == 0,
             "Manager lifetime must not save or close ontology");
 }
 

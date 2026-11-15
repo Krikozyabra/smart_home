@@ -7,14 +7,14 @@
 #include <memory>
 namespace smart_home::ontology {
 namespace detail { struct OntologyTestAccess; }
-/** @brief Единственный владелец базы, блокировки и фонового потока.
+/** @brief Единственный владелец базы, рабочего каталога и блокировки.
  * @details close() сообщает об ошибке финального сохранения; при ошибке можно повторить close().
  * Деструктор подавляет исключения и при неудаче сохраняет рабочий каталог для ручного восстановления.
- * Периодический сбой логируется, следующая попытка выполняется через заданный период.
+ * Фоновых потоков сохранения нет; относительные пути конфигурации фиксируются при создании.
  */
 class LadybugOntologyStorage final : public IOntologyStorage {
 public:
-    /** @brief Открывает базу и запускает синхронизацию.
+    /** @brief Открывает рабочую копию базы; при заданном dump_path сохраняет новую схему.
      * @param config Настройки.
      * @throws std::invalid_argument Некорректные параметры.
      * @throws std::runtime_error База занята, повреждена, несовместима либо недоступны файлы/RAM.
@@ -66,8 +66,8 @@ public:
     std::vector<OntologyDeviceRecord> getDevicesWithAbility(const std::string& ability_id) const override;
     /** @copydoc IOntologyStorage::getDeviceDetails */
     std::optional<DeviceOntologyDetails> getDeviceDetails(DeviceId device_id) const override;
-    /** @copydoc IOntologyStorage::sync */
-    void sync() override;
+    /** @copydoc IOntologyStorage::dumpToFile */
+    void dumpToFile(const std::string& path) override;
     /** @copydoc IOntologyStorage::close */
     void close() override;
 private:

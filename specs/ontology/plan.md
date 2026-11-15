@@ -20,12 +20,12 @@
 - [x] 1. **Рефакторинг схемы и Capability-Based модель**:
   - Схема таблицы `devices(id INT64, name STRING, PRIMARY KEY(id))`.
   - Удаление поля `type` из структур и запросов.
-- [ ] 2. **Удаление периодического таймера и фонового потока**:
+- [x] 2. **Удаление периодического таймера и фонового потока**:
   - Удалить `sync_interval` и `parseSyncInterval` из `ontology/include/ontology/OntologyConfig.h` и `ontology/src/OntologyConfig.cpp`.
   - Удалить чтение `SMART_HOME_ONTOLOGY_SYNC_SECONDS` из `configFromEnvironment()`.
   - Удалить `worker`, `workerMutex`, `workerCondition`, `workerLoop()` из `LadybugOntologyStorage.cpp`.
-- [ ] 3. **Унификация методов и конфигурации с модулем Storage**:
-  - В `OntologyConfig` добавить поле `std::string dump_path = {};` для финального автодампа.
+- [x] 3. **Унификация методов и конфигурации с модулем Storage**:
+  - В `OntologyConfig` переименовать `persistent_path` в `database_path`; добавить поле `std::string dump_path = {};` для финального автодампа.
   - В `IOntologyStorage.h` удалить `virtual void sync() = 0;` и добавить:
     ```cpp
     virtual void dumpToFile(const std::string &path) = 0;
@@ -37,7 +37,7 @@
     - Метод `close()` с опциональным автодампом по `dump_path`, очисткой RAM, сбросом lock и переводом объекта в `closed_ = true`.
     - Проверку `closed_` во всех методах интерфейса с выбросом `std::logic_error`.
     - Деструктор с вызовом `close()` внутри `try-catch` и логированием на уровне `Critical`.
-- [ ] 4. **Адаптация и расширение тестов**:
+- [x] 4. **Адаптация и расширение тестов**:
   - В `tests/OntologyConfigTests.cpp`: исключить проверки `sync_interval`, добавить проверки `dump_path`.
   - Переименовать `tests/OntologySyncTests.cpp` в `tests/OntologyDumpTests.cpp`:
     - Заменить `sync()` на `dumpToFile(path)`.
@@ -49,7 +49,7 @@
     - Добавить проверку конкурентных вызовов `dumpToFile(path)` параллельно с чтением и записью графа.
     - Проверить конкурентный `close()`.
   - В `tests/CMakeLists.txt`: переименовать цель `ontology_sync_tests` в `ontology_dump_tests`.
-- [ ] 5. **Верификация**:
+- [x] 5. **Верификация**:
   - `cmake --build build --target ontology_config_tests ontology_storage_tests ontology_dump_tests ontology_concurrency_tests`
   - `ctest --test-dir build -R ontology --output-on-failure`
   - `cmake --build build --target docs`
@@ -66,3 +66,20 @@ cmake --build build --target docs
 # Запуск тестов онтологии
 ctest --test-dir build -R ontology --output-on-failure
 ```
+
+## 4. Результаты проверки
+
+- `cmake -B build -S . -DBUILD_DOCS=ON` — успешно; локальный LadybugDB SDK 0.22.3,
+  приватный C++20, публичные потребители C++17.
+- `cmake --build build -j2` — собраны все цели, включая приложение и runtime-тесты.
+- `cmake --build build --target ontology_config_tests ontology_storage_tests ontology_dump_tests ontology_concurrency_tests -j2`
+  — успешно.
+- `ctest --test-dir build --output-on-failure` — все 29 зарегистрированных тестов
+  прошли, включая четыре набора ontology и проверки поколений runtime.
+- `cmake --build build --target docs` — успешно, без предупреждений Doxygen.
+- Дополнительно проверены независимые назначения dump без новых изменений,
+  относительные пути после смены cwd, сохранение исходной базы при отдельном
+  dump_path, повтор close после ошибки назначения, все методы после закрытия,
+  отказ сохранения до/после rename и восстановление рабочей копии.
+
+Замеры CPU/RAM и проверка на Raspberry Pi в эту верификацию не входили.

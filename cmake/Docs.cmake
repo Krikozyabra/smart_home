@@ -32,6 +32,7 @@ if(EXISTS "${PROJECT_SOURCE_DIR}/README.md")
 endif()
 
 list(APPEND DOC_INPUTS "${PROJECT_SOURCE_DIR}/specs/audio" "${PROJECT_SOURCE_DIR}/specs/runtime"
+                      "${PROJECT_SOURCE_DIR}/specs/ontology"
                       "${PROJECT_SOURCE_DIR}/specs/storage"
                       "${PROJECT_SOURCE_DIR}/specs/device_management")
 

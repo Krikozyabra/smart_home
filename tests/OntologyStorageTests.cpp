@@ -42,7 +42,7 @@ void capabilityBasedDevices() {
         require(storage.getDevicesWithAbility("brightness") == std::vector<OntologyDeviceRecord>{renamed} &&
                 storage.getDevicesWithAbility("temperature") == std::vector<OntologyDeviceRecord>{{7, "Shared"}},
                 "roles follow current links");
-        storage.sync();
+        storage.dumpToFile(fixture.config.database_path);
         storage.close();
     }
     LadybugOntologyStorage reopened(fixture.config);
@@ -53,7 +53,7 @@ void capabilityBasedDevices() {
 
 void rejectLegacyDeviceSchema() {
     Fixture fixture;
-    rawDatabase(fixture.config.persistent_path, [](auto& conn) {
+    rawDatabase(fixture.config.database_path, [](auto& conn) {
         rawQuery(conn, "CREATE NODE TABLE rooms(id STRING, name STRING, PRIMARY KEY(id))");
         rawQuery(conn, "CREATE NODE TABLE devices(id INT64, name STRING, type STRING, PRIMARY KEY(id))");
         rawQuery(conn, "CREATE NODE TABLE abilities(id STRING, name STRING, category STRING, PRIMARY KEY(id))");
@@ -62,14 +62,14 @@ void rejectLegacyDeviceSchema() {
         rawQuery(conn, "CREATE (:devices {id: 0, name: 'Legacy light', type: 'light'})");
         rawQuery(conn, "CHECKPOINT");
     });
-    const auto before = bytes(fixture.config.persistent_path);
+    const auto before = bytes(fixture.config.database_path);
     try {
         LadybugOntologyStorage storage(fixture.config);
         require(false, "legacy devices.type schema was accepted");
     } catch (const std::runtime_error& error) {
         require(std::string(error.what()).find("explicit migration required") != std::string::npos, "legacy schema requires explicit migration");
     }
-    require(bytes(fixture.config.persistent_path) == before && fs::is_empty(fixture.root / "ram"),
+    require(bytes(fixture.config.database_path) == before && fs::is_empty(fixture.root / "ram"),
             "legacy database preserved and failed startup workspace cleaned");
 }
 } // namespace
@@ -138,10 +138,10 @@ int main() {
         }
         // Existing incompatible databases must not be silently recreated.
         Fixture incompatible;
-        rawDatabase(incompatible.config.persistent_path, [](auto& conn) { rawQuery(conn, "CREATE NODE TABLE rooms(id INT64 PRIMARY KEY, name STRING)"); });
-        const auto before = bytes(incompatible.config.persistent_path);
+        rawDatabase(incompatible.config.database_path, [](auto& conn) { rawQuery(conn, "CREATE NODE TABLE rooms(id INT64 PRIMARY KEY, name STRING)"); });
+        const auto before = bytes(incompatible.config.database_path);
         expectException<std::runtime_error>([&] { LadybugOntologyStorage storage(incompatible.config); });
-        require(bytes(incompatible.config.persistent_path) == before, "incompatible database preserved");
+        require(bytes(incompatible.config.database_path) == before, "incompatible database preserved");
         capabilityBasedDevices();
         rejectLegacyDeviceSchema();
         std::cout << "Ontology storage tests passed\n";
