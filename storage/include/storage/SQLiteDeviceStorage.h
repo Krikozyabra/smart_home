@@ -18,14 +18,20 @@ namespace smart_home {
 /**
  * @class SQLiteDeviceStorage
  * @brief Хранилище устройств на основе SQLite, реализующее интерфейс IDeviceStorage.
+ * @details Объект владеет соединением. Обращения сериализует вызывающий код.
+ * После успешного close() все операции, кроме повторного close(), выбрасывают
+ * std::logic_error до проверки аргументов и обращения к SQLite или файлам.
  */
 class SQLiteDeviceStorage final : public IDeviceStorage {
   private:
     /**
-     * @brief Указатель на структуру дескриптора базы данных SQLite.
+     * @brief Дескриптор рабочей базы; nullptr означает закрытое состояние.
      */
     sqlite3* database = nullptr;
     std::string dump_path;
+
+    /** @brief Проверяет открытое состояние; иначе выбрасывает std::logic_error. */
+    void ensureOpen() const;
 
     /**
      * @brief Создает схему таблиц базы данных SQLite, если она еще не создана.
@@ -46,12 +52,24 @@ class SQLiteDeviceStorage final : public IDeviceStorage {
                                  const std::string &dump_path = {});
 
     /**
-     * @brief Выполняет настроенный финальный dump и закрывает соединение.
+     * @brief Вызывает close() как безопасный резервный путь завершения.
      * @details Ошибка dump однократно сообщается через logging и не выходит
      * исключением. Все обращения к объекту должны завершиться до уничтожения;
      * исключительный доступ к назначению требуется до окончания деструктора.
+     * После успешного явного close() повторного dump нет. При ошибке резервного
+     * close() соединение всё равно освобождается.
      */
     ~SQLiteDeviceStorage() noexcept override;
+
+    /**
+     * @brief Выполняет настроенный финальный dump и закрывает соединение.
+     * @details После успеха повторный вызов ничего не делает. При ошибке dump
+     * соединение остаётся открытым: данные доступны, close() можно повторить.
+     * Ошибка передаётся вызывающему коду без логирования. Перед вызовом нужно
+     * завершить остальные обращения и обеспечить исключительный доступ к dump.
+     * @throws std::runtime_error Ошибка финального dump или закрытия соединения.
+     */
+    void close() override;
 
     /**
      * @brief Синхронно публикует всю базу main в самостоятельный SQLite-файл.
@@ -89,26 +107,26 @@ class SQLiteDeviceStorage final : public IDeviceStorage {
     /**
      * @brief Выполняет поиск записи устройства по физическому идентификатору и идентификатору драйвера.
      * @param physical_id Физический идентификатор устройства.
-     * @param device_id Идентификатор драйвера (параметр назван device_id в интерфейсе).
+     * @param driver_id Идентификатор драйвера.
      * @return Объект std::optional с найденной записью DeviceRecord или std::nullopt, если запись отсутствует.
      * @throws std::invalid_argument Если один из идентификаторов пуст.
      * @throws std::runtime_error При ошибке SQLite или неожиданном NULL в записи.
      */
     std::optional<DeviceRecord>
     findByPhysicalId(const std::string &physical_id,
-                     const std::string &device_id) const override;
+                     const std::string &driver_id) const override;
 
     /**
      * @brief Вставляет новую запись об устройстве в таблицу базы данных SQLite.
      * @param physical_id Физический идентификатор устройства.
-     * @param device_id Идентификатор драйвера (параметр назван device_id в интерфейсе).
+     * @param driver_id Идентификатор драйвера.
      * @param default_name Имя устройства по умолчанию.
      * @return Созданная запись DeviceRecord с присвоенным локальным идентификатором.
      * @throws std::invalid_argument Если идентификаторы пусты или их пара уже присутствует.
      * @throws std::runtime_error При ошибке SQLite или отрицательном локальном идентификаторе.
      */
     DeviceRecord insert(const std::string &physical_id,
-                        const std::string &device_id,
+                        const std::string &driver_id,
                         const std::string &default_name) override;
 
     /**

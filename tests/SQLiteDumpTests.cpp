@@ -5,6 +5,7 @@
 #include "storage/SQLiteDeviceStorage.h"
 #include "storage/src/Testing.h"
 
+#include <sqlite3.h>
 #include <spdlog/sinks/ostream_sink.h>
 
 #include <algorithm>
@@ -150,6 +151,12 @@ void unsupportedMemoryDump() {
             "Unsupported dump neither changes nor creates a file");
     require(storage.getAll() == std::vector<smart_home::DeviceRecord>{saved},
             "Unsupported dump preserves inventory");
+    storage.close();
+    storage.close();
+    for (const auto &path : {existing.string(), missing.string(), std::string{}})
+        expectException<std::logic_error>([&] { storage.dumpToFile(path); });
+    require(bytes(existing) == baseline && !fs::exists(missing),
+            "Closed memory storage neither changes nor creates a file");
     noTemporaryFiles(directory);
 }
 
@@ -387,6 +394,132 @@ std::size_t descriptorsFor(const fs::path &path) {
     return count;
 }
 
+void explicitClose() {
+    Directory directory;
+    const auto source_path = directory.path / "source.db";
+    const auto target = directory.path / "final.db";
+    const auto other = directory.path / "other.db";
+    int attempts = 0;
+    Hook hook([&](auto point) {
+        if (point == DumpStage::Backup)
+            ++attempts;
+    });
+    {
+        SQLiteDeviceStorage source(source_path.string(), target.string());
+        smart_home::IDeviceStorage &storage = source;
+        const auto saved = storage.insert("first", "driver", "First");
+        storage.dumpToFile(other.string());
+        storage.insert("last", "driver", "Last");
+        attempts = 0;
+        storage.close();
+        require(attempts == 1, "Explicit close publishes one final snapshot");
+        requireSnapshot(target, 2);
+        requireSnapshot(other, 1);
+        {
+            SQLiteDeviceStorage restored(target.string());
+            require(restored.findByPhysicalId("first", "driver") == saved,
+                    "Explicit close preserves inventory and IDs");
+        }
+        require(descriptorsFor(source_path) == 0,
+                "Explicit close releases the source connection immediately");
+        const auto baseline = bytes(target);
+        storage.close();
+        expectException<std::logic_error>([&] { storage.getAll(); });
+        expectException<std::logic_error>(
+            [&] { storage.findByPhysicalId("first", "driver"); });
+        expectException<std::logic_error>(
+            [&] { storage.insert("new", "driver", "Name"); });
+        expectException<std::logic_error>(
+            [&] { storage.dumpToFile(target.string()); });
+        expectException<std::logic_error>(
+            [&] { storage.dumpToFile((directory.path / "missing.db").string()); });
+        require(bytes(target) == baseline &&
+                    !fs::exists(directory.path / "missing.db"),
+                "Closed storage leaves snapshot files unchanged");
+        // Remove the snapshot to prove neither repeated close nor destruction
+        // tries to save it again.
+        fs::remove(target);
+        storage.close();
+    }
+    require(attempts == 1 && !fs::exists(target),
+            "Repeated close and destructor do not repeat the final dump");
+    noTemporaryFiles(directory);
+}
+
+void failedClose() {
+    Directory directory;
+    const auto target = directory.path / "final.db";
+    std::ostringstream messages;
+    logging::setLevel(logging::Level::Error);
+    logging::installTestSink(
+        std::make_shared<spdlog::sinks::ostream_sink_mt>(messages));
+    for (auto stage : {DumpStage::Backup, DumpStage::Close, DumpStage::FileSync,
+                       DumpStage::Rename, DumpStage::DirectorySync}) {
+        SQLiteDeviceStorage source(":memory:", target.string());
+        smart_home::IDeviceStorage &storage = source;
+        const auto first = storage.insert("first", "driver", "First");
+        storage.dumpToFile(target.string());
+        const auto baseline = bytes(target);
+        storage.insert("second", "driver", "Second");
+        {
+            Hook hook([stage](auto point) {
+                if (point == stage)
+                    throw std::runtime_error("close injected failure");
+            });
+            expectException<std::runtime_error>([&] { storage.close(); });
+        }
+        if (stage != DumpStage::DirectorySync)
+            require(bytes(target) == baseline,
+                    "Failed close before rename preserves previous snapshot");
+        else
+            requireSnapshot(target, 2);
+        require(storage.findByPhysicalId("first", "driver") == first &&
+                    storage.getAll().size() == 2,
+                "Failed close retains access to working data");
+        storage.insert("retry", "driver", "Retry");
+        storage.close();
+        storage.close();
+        requireSnapshot(target, 3);
+        noTemporaryFiles(directory);
+    }
+    {
+        SQLiteDeviceStorage source(":memory:", target.string());
+        source.insert("first", "driver", "First");
+        fs::remove(target);
+        fs::create_symlink(directory.path / "absent.db", target);
+        expectException<std::runtime_error>([&] { source.close(); });
+        require(fs::is_symlink(target) && source.getAll().size() == 1,
+                "Invalidated auto-dump path is a close failure, preserving data");
+        fs::remove(target);
+        source.close();
+        requireSnapshot(target, 1);
+    }
+    logging::flush();
+    logging::shutdown();
+    require(messages.str().empty(),
+            "Explicit close propagates failures without logging them");
+}
+
+void destructorRetriesFailedClose() {
+    Directory directory;
+    const auto target = directory.path / "final.db";
+    {
+        SQLiteDeviceStorage source(":memory:", target.string());
+        source.insert("first", "driver", "First");
+        {
+            Hook hook([](auto point) {
+                if (point == DumpStage::FileSync)
+                    throw std::runtime_error("close injected failure");
+            });
+            expectException<std::runtime_error>([&] { source.close(); });
+        }
+        require(!fs::exists(target), "Failed first close publishes no snapshot");
+        source.insert("last", "driver", "Last");
+    }
+    requireSnapshot(target, 2);
+    noTemporaryFiles(directory);
+}
+
 void failedAutoDump() {
     Directory directory;
     const auto source_path = directory.path / "source.db";
@@ -483,6 +616,9 @@ int main() {
         invalidDestinations();
         handledFailures();
         autoDump();
+        explicitClose();
+        failedClose();
+        destructorRetriesFailedClose();
         failedAutoDump();
         interruptedPublication();
         std::cout << "SQLite dump tests passed\n";

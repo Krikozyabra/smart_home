@@ -20,6 +20,8 @@ namespace smart_home {
 /**
  * @class InMemoryDeviceStorage
  * @brief Хранилище устройств в оперативной памяти, реализующее интерфейс IDeviceStorage.
+ * @details Обращения сериализует вызывающий код. После close() все операции,
+ * кроме повторного close(), выбрасывают std::logic_error.
  */
 class InMemoryDeviceStorage final : public IDeviceStorage {
   private:
@@ -37,6 +39,11 @@ class InMemoryDeviceStorage final : public IDeviceStorage {
      * @brief Следующий доступный локальный идентификатор для нового устройства.
      */
     DeviceId next_local_id = 0;
+
+    bool closed_ = false;
+
+    /** @brief Проверяет открытое состояние; иначе выбрасывает std::logic_error. */
+    void ensureOpen() const;
 
   public:
     /**
@@ -76,6 +83,13 @@ class InMemoryDeviceStorage final : public IDeviceStorage {
      * @throws std::logic_error Всегда: реализация хранит данные только в RAM.
      */
     void dumpToFile(const std::string &path) override;
+
+    /**
+     * @brief Переводит хранилище в закрытое состояние без записи в файл.
+     * @details Повторный вызов безопасен. Все дальнейшие операции хранилища
+     * выбрасывают std::logic_error. Обращения сериализует вызывающий код.
+     */
+    void close() override;
 };
 
 } // namespace smart_home
