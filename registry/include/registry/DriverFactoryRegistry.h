@@ -1,60 +1,39 @@
-/**
- * @file DriverFactoryRegistry.h
- * @brief Реестр фабрик драйверов устройств системы умного дома.
- */
-
 #pragma once
 
-#include "drivers/factories/IDeviceDriverFactory.h"
+#include "drivers/DeviceCreator.h"
 
 #include <cstddef>
-#include <memory>
 #include <string>
 #include <unordered_map>
+
 namespace smart_home {
 
 /**
- * @class DriverFactoryRegistry
- * @brief Реестр для регистрации и поиска фабрик драйверов устройств по их строковым идентификаторам.
+ * @brief Реестр создателей драйверов по идентификатору протокола.
+ * @details Владеет функциями создания. Вызывающий код сериализует доступ.
  */
 class DriverFactoryRegistry {
-  private:
-    /**
-     * @brief Хранилище зарегистрированных фабрик драйверов, сопоставляющее строковый идентификатор драйвера с уникальным указателем на фабрику IDeviceDriverFactory.
-     */
-    std::unordered_map<std::string, std::unique_ptr<IDeviceDriverFactory>>
-        factories;
-
   public:
     /**
-     * @brief Регистрирует новую фабрику драйверов устройств в реестре.
-     *
-     * Первый параметр передает уникальный указатель на регистрируемую фабрику IDeviceDriverFactory.
-     * @throws std::invalid_argument Если передан nullptr или идентификатор драйвера пуст.
-     * @throws std::runtime_error Если фабрика для этого драйвера уже зарегистрирована.
-     *
+     * @brief Регистрирует создателя протокола.
+     * @param driver_id Непустой идентификатор протокола.
+     * @param creator Функция создания, передаваемая во владение реестра.
+     * @throws std::invalid_argument Пустой идентификатор или функция.
+     * @throws std::runtime_error Протокол уже зарегистрирован.
      */
-    void add(std::unique_ptr<IDeviceDriverFactory>);
+    void add(const std::string &driver_id, DeviceCreator creator);
 
     /**
-     * @brief Выполняет поиск фабрики драйверов по идентификатору драйвера.
-     * @param driver_id Строковый идентификатор драйвера.
-     * @return Указатель на найденную фабрику IDeviceDriverFactory или nullptr, если фабрика не найдена.
+     * @brief Возвращает создателя протокола или nullptr.
+     * @return Указатель действителен в течение жизни реестра.
      */
-    IDeviceDriverFactory *find(const std::string &driver_id);
+    const DeviceCreator *find(const std::string &driver_id) const;
 
-    /**
-     * @brief Выполняет поиск фабрики драйверов по идентификатору драйвера (константная версия).
-     * @param driver_id Строковый идентификатор драйвера.
-     * @return Константный указатель на найденную фабрику IDeviceDriverFactory или nullptr, если фабрика не найдена.
-     */
-    const IDeviceDriverFactory *find(const std::string &driver_id) const;
-
-    /**
-     * @brief Возвращает текущее количество зарегистрированных фабрик драйверов.
-     * @return Количество фабрик в реестре.
-     */
+    /// @brief Возвращает число зарегистрированных протоколов.
     std::size_t size() const noexcept;
+
+  private:
+    std::unordered_map<std::string, DeviceCreator> creators_;
 };
 
 } // namespace smart_home

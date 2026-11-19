@@ -8,7 +8,7 @@
 #include "registry/DriverFactoryRegistry.h"
 #include "registry/DeviceRegistry.h"
 #include "device_management/DeviceManager.h"
-#include "drivers/factories/SimulatedLightDriverFactory.h"
+#include "drivers/DeviceCreator.h"
 #include <spdlog/sinks/ostream_sink.h>
 #include <spdlog/sinks/base_sink.h>
 
@@ -219,7 +219,7 @@ void deviceManagerDiagnostics() {
     device_management_test::GraphFixture fixture;
     smart_home::InMemoryDeviceStorage storage;
     smart_home::DriverFactoryRegistry factories;
-    factories.add(std::make_unique<smart_home::SimulatedLightDriverFactory>());
+    factories.add("simulated", smart_home::createSimulatedDriver);
     smart_home::DeviceRegistry devices;
     smart_home::DeviceManager manager(storage, factories, devices, fixture.graph);
     logging::Config config;
@@ -229,8 +229,8 @@ void deviceManagerDiagnostics() {
     std::ostringstream output;
     logging::installTestSink(std::make_shared<spdlog::sinks::ostream_sink_mt>(output));
     manager.restoreStoredDevices();
-    const auto record = manager.registerDiscoveredDevice("PRIVATE-ADDRESS", "simulated.light", "Saved");
-    manager.registerDiscoveredDevice("PRIVATE-ADDRESS", "simulated.light", "Ignored");
+    const auto record = manager.registerDiscoveredDevice("PRIVATE-ADDRESS", "simulated", "Saved", {"on_off"});
+    manager.registerDiscoveredDevice("PRIVATE-ADDRESS", "simulated", "Ignored");
     require(occurrences(output.str(), "[info]") == 1 &&
                 occurrences(output.str(), "[debug]") == 2 &&
                 output.str().find("device=" + std::to_string(record.local_id)) != std::string::npos &&
@@ -240,7 +240,7 @@ void deviceManagerDiagnostics() {
     fixture.graph.addDevice({record.local_id, "Wrong name"});
     expectException<std::runtime_error>([&] { manager.restoreStoredDevices(); });
     expectException<std::runtime_error>([&] {
-        manager.registerDiscoveredDevice("PRIVATE-ADDRESS", "simulated.light", "Ignored");
+        manager.registerDiscoveredDevice("PRIVATE-ADDRESS", "simulated", "Ignored");
     });
     require(output.str() == success_logs,
             "Propagated manager failures must not log errors or successful completion");

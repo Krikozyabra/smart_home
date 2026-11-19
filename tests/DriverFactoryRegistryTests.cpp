@@ -1,28 +1,32 @@
 #include "TestUtil.h"
-#include "drivers/factories/SimulatedLightDriverFactory.h"
+#include "drivers/DeviceCreator.h"
 #include "registry/DriverFactoryRegistry.h"
-#include <memory>
+
 #include <stdexcept>
 
 int main() {
-  smart_home::DriverFactoryRegistry registry;
-  const auto &const_registry = registry;
-  require(registry.size() == 0, "Initial registry must be empty");
-  require(registry.find("unknown.driver") == nullptr,
-          "Try to find unregistered driver must return nullptr");
-  require(const_registry.find("unknown.driver") == nullptr,
-          "Try to const fing unregistered driver must return nullptr");
+    using namespace smart_home;
+    DriverFactoryRegistry registry;
+    require(registry.size() == 0, "Initial registry must be empty");
+    require(registry.find("unknown") == nullptr,
+            "An unknown protocol has no creator");
 
-  expectException<std::invalid_argument>([&] { registry.add(nullptr); });
+    expectException<std::invalid_argument>(
+        [&] { registry.add("simulated", nullptr); });
+    expectException<std::invalid_argument>(
+        [&] { registry.add("", createSimulatedDriver); });
 
-  registry.add(std::make_unique<smart_home::SimulatedLightDriverFactory>());
-  require(registry.size() == 1, "Adding correct factory must increase size");
-  require(registry.find("simulated.light") != nullptr,
-          "Try to find correct driver id must mot return nullptr");
-  require(const_registry.find("simulated.light") != nullptr,
-          "Try to const find correct driver id must not return nullptr");
+    registry.add("simulated", createSimulatedDriver);
+    const auto *creator = registry.find("simulated");
+    require(registry.size() == 1 && creator,
+            "A creator must be stored by protocol");
+    const DeviceRecord record{1, "SIM-1", "simulated", "Device"};
+    const auto driver = (*creator)(record);
+    require(driver->device().getId() == record.local_id,
+            "The registered callable must construct the requested device");
 
-  expectException<std::runtime_error>([&] {
-    registry.add(std::make_unique<smart_home::SimulatedLightDriverFactory>());
-  });
+    expectException<std::runtime_error>(
+        [&] { registry.add("simulated", createSimulatedDriver); });
+    require(registry.find("simulated") == creator,
+            "Duplicate registration must keep the creator");
 }

@@ -110,6 +110,14 @@ int main() {
                 "All records must survive database reopening");
     }
     smart_home::SQLiteDeviceStorage empty(":memory:");
+    const auto legacy = empty.insert("sim-1", "simulated.light", "Light");
+    empty.insert("sim-2", "simulated.temperature_sensor", "Sensor");
+    empty.insert("sim-2", "simulated", "Conflicting record");
+    const std::vector<std::string> old_ids{"simulated.light", "simulated.temperature_sensor"};
+    expectException<std::runtime_error>([&] { empty.replaceDriverIds(old_ids, "simulated"); });
+    require(empty.findByPhysicalId("sim-1", "simulated.light") == legacy &&
+                empty.findByPhysicalId("sim-2", "simulated.temperature_sensor").has_value(),
+            "A migration conflict must roll back the entire update");
     empty.close();
     empty.close();
     expectException<std::logic_error>([&] { empty.getAll(); });

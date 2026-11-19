@@ -8,6 +8,7 @@
 #include "devices/Device.h"
 
 #include <descriptors/DeviceDescriptor.h>
+#include <string>
 
 namespace smart_home{
 
@@ -33,6 +34,17 @@ public:
      * @return Константная ссылка на дескриптор DeviceDescriptor.
      */
     virtual const DeviceDescriptor& descriptor() const = 0;
+
+    /**
+     * @brief Выполняет запись в поддерживаемую стандартную возможность.
+     * @param capability_id Идентификатор возможности.
+     * @param value Проверяемое значение из команды.
+     * @details Базовая реализация записывает типизированное значение в Device.
+     * Вызывающий код сериализует доступ к драйверу, устройству и дескриптору.
+     * @throws std::invalid_argument Операция не поддерживается или значение неверно.
+     */
+    virtual void writeCapability(const std::string &capability_id,
+                                 const Value &value);
 };
 
 }

@@ -42,7 +42,11 @@ inline void seedCatalog(IOntologyStorage &graph) {
              AbilityRecord{"on_off", "Power", "lighting"},
              AbilityRecord{"brightness", "Brightness", "lighting"},
              AbilityRecord{"color", "Color", "lighting"},
-             AbilityRecord{"temperature", "Temperature", "climate"}})
+             AbilityRecord{"temperature", "Temperature", "climate"},
+             AbilityRecord{"humidity", "Humidity", "climate"},
+             AbilityRecord{"contact", "Contact", "security"},
+             AbilityRecord{"battery", "Battery", "power"},
+             AbilityRecord{"power", "Power", "power"}})
         graph.addAbility(ability);
 }
 

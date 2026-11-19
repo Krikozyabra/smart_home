@@ -210,6 +210,7 @@ class Console(RuntimeCase):
         self.assertEqual(len(re.findall('Save queued revision', app.output)), count)
         app.finish()
         _, before_records, before_values = self.generation()
+        self.assertEqual({record[2] for record in before_records}, {'simulated'})
         again = App(self)
         again.send('show 1\nshow 2\nshow 3\n')
         again.expect('brightness = 75')
@@ -333,6 +334,8 @@ class Persistence(RuntimeCase):
         app.finish()
         old = self.active_path()
         self.rewrite_sqlite("""
+            UPDATE devices SET driver_id = 'simulated.light' WHERE local_id IN (1, 2);
+            UPDATE devices SET driver_id = 'simulated.temperature_sensor' WHERE local_id = 3;
             DROP TABLE device_properties;
             CREATE TABLE runtime_values(
                 id INTEGER PRIMARY KEY, type TEXT NOT NULL, on_value INTEGER,
@@ -343,7 +346,9 @@ class Persistence(RuntimeCase):
                 (2, 'light', 0, 41, 0, 128, 255, NULL),
                 (3, 'temperature_sensor', NULL, NULL, NULL, NULL, NULL, 105.125);
         """)
+        self.control.gate('before-current-3')
         again = App(self)
+        self.control.wait('before-current-3')
         again.send('show 1\nshow 2\nshow 3\n')
         again.expect('brightness = 72')
         again.expect('color = 10 20 30')
@@ -353,9 +358,13 @@ class Persistence(RuntimeCase):
         again.expect('on_off = false')
         again.expect(r'temperature = 105\.125')
         self.assertEqual(self.active_path(), old)
+        self.control.release('before-current-3')
+        again.expect('Saved revision 3')
         again.finish()
-        path, _, values = self.generation()
+        path, records, values = self.generation()
         self.assertNotEqual(path, old)
+        self.assertEqual([(record[0], record[2]) for record in records],
+                         [(1, 'simulated'), (2, 'simulated'), (3, 'simulated')])
         self.assertEqual(values[1], {'brightness': 72, 'color': '10,20,30', 'on_off': 'true'})
         self.assertEqual(values[2], {'brightness': 41, 'color': '0,128,255', 'on_off': 'false'})
         self.assertEqual(values[3], {'temperature': '105.125'})

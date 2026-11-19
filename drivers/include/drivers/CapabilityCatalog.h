@@ -8,7 +8,13 @@
 #include "descriptors/CapabilityDescriptor.h"
 #include "devices/PropertyTag.h"
 
+#include <optional>
+#include <string_view>
+#include <variant>
+
 namespace smart_home {
+
+class Device;
 
 /**
  * @brief Каталог стандартных возможностей устройств.
@@ -24,7 +30,38 @@ class CapabilityCatalog {
     template <typename T> struct Entry {
         PropertyTag<T> property;         ///< Метка свойства устройства.
         CapabilityDescriptor descriptor; ///< ID возможности и её операции.
+        T initial_value;                 ///< Значение до первого обновления.
     };
+
+    /** @brief Запись каталога для выбора возможности по строковому ID. */
+    struct Definition {
+        const CapabilityDescriptor
+            &descriptor; ///< Дескриптор со сроком жизни каталога.
+        std::variant<PropertyTag<bool>, PropertyTag<int>, PropertyTag<double>,
+                     PropertyTag<Color>>
+            property;        ///< Типизированная метка.
+        Value initial_value; ///< Начальное значение.
+
+        /// @brief Возвращает ключ в словаре Device.
+        const char *key() const noexcept;
+        /// @brief Проверяет наличие операции записи.
+        bool writable() const noexcept;
+        /// @brief Проверяет тип и диапазон значения.
+        bool accepts(const Value &value) const noexcept;
+        /// @brief Возвращает копию свойства ожидаемого типа, если оно есть.
+        std::optional<Value> read(const Device &device) const;
+        /**
+         * @brief Записывает свойство через его метку.
+         * @throws std::invalid_argument При неверном типе или диапазоне.
+         */
+        void store(Device &device, const Value &value) const;
+    };
+
+    /**
+     * @brief Возвращает запись каталога или nullptr для неизвестного ID.
+     * @return Указатель действителен до завершения программы.
+     */
+    static const Definition *find(std::string_view capability_id);
 
     /// @brief Возвращает возможность включения и выключения.
     static const Entry<bool> &onOff();

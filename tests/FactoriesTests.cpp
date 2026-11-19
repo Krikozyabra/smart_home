@@ -1,64 +1,83 @@
 #include "TestUtil.h"
 #include "devices/PropertyTags.h"
 #include "drivers/CapabilityCatalog.h"
-#include "drivers/SimulatedTemperatureSensorDriver.h"
-#include "drivers/factories/SimulatedLightDriverFactory.h"
-#include "drivers/interfaces/IDeviceDriver.h"
-#include "storage/DeviceRecord.h"
+#include "drivers/DeviceCreator.h"
+#include "drivers/UniversalDeviceDriver.h"
 
-#include <memory>
 #include <stdexcept>
-#include <variant>
 
 int main() {
-  smart_home::SimulatedLightDriverFactory sl_factory;
-  require(sl_factory.getDriverId() == "simulated.light",
-          "Factory must return correct driver id");
-  smart_home::DeviceRecord data_for_factory{1, "AC:12:DD", "simulated.light",
-                                            "Light number 1"};
-  std::unique_ptr<smart_home::IDeviceDriver> generated_driver =
-      sl_factory.create(data_for_factory);
-  require(generated_driver != nullptr,
-          "Driver factory must not return nullptr");
-  auto &device = generated_driver->device();
-  require(device.getId() == data_for_factory.local_id,
-          "Generated device must have id like in record");
-  require(device.getName() == data_for_factory.name,
-          "Generated device must have name like in record");
-  require(device.get(smart_home::props::light::State) == false &&
-              device.get(smart_home::props::light::Brightness) == 50 &&
-              device.get(smart_home::props::light::Rgb) == Color{255, 255, 255},
-          "Light factory must initialize the standard device properties");
-  auto &descriptor = generated_driver->descriptor();
-  require(descriptor.getLocalId() == data_for_factory.local_id,
-          "Generated descriptor must have id like in record");
-  require(descriptor.getName() == data_for_factory.name,
-          "Generated descriptor must have name like in record");
-  require(descriptor.getPhysicalId() == data_for_factory.physical_id,
-          "Generated descriptor must have id like in record");
+    using namespace smart_home;
+    const DeviceRecord record{1, "SIM-1", "simulated", "Lamp and sensor"};
+    auto base = createSimulatedDriver(record);
+    auto &driver = dynamic_cast<UniversalDeviceDriver &>(*base);
+    auto &device = driver.device();
+    const auto &descriptor = driver.descriptor();
+    require(device.getId() == record.local_id &&
+                device.getName() == record.name &&
+                descriptor.getLocalId() == record.local_id &&
+                descriptor.getPhysicalId() == record.physical_id &&
+                descriptor.getName() == record.name,
+            "The protocol creator must preserve inventory identity");
+    require(descriptor.getCapabilities().empty() &&
+                device.getProperties().empty(),
+            "The protocol creator must initialize a bare twin");
 
-  smart_home::DeviceRecord broken_data_for_factory{
-      2, "BB:00:01", "zigbee.light", "BROKEN LIGHT"};
-  expectException<std::invalid_argument>(
-      [&] { sl_factory.create(broken_data_for_factory); });
+    for (const auto *id : {"on_off", "brightness", "color", "temperature",
+                           "humidity", "contact", "battery", "power"}) {
+        driver.addCapability(id);
+        const auto *entry = CapabilityCatalog::find(id);
+        require(entry && entry->read(device) == entry->initial_value &&
+                    descriptor.getCapabilities().back().getId() == id,
+                "The catalog must supply operations and a typed initial value");
+    }
+    require(device.get(props::light::Brightness) == 50 &&
+                device.get(props::climate::Temperature) == 23.0 &&
+                device.get(props::security::Battery) == 0,
+            "Mixed capabilities must retain their own property defaults");
+    driver.writeCapability("brightness", 72);
+    require(device.get(props::light::Brightness) == 72,
+            "A simulated write must update RAM");
 
-  const auto &temperature = smart_home::CapabilityCatalog::temperature();
-  const auto &operation = temperature.descriptor.getOperations().at(0);
-  const auto &output = operation.getOutputParameter().value();
-  const auto &metadata =
-      std::get<smart_home::FloatMetadata>(output.getMetadata());
-  require(metadata.min == temperature.property.min_value &&
-              metadata.max == temperature.property.max_value &&
-              metadata.unit == temperature.property.unit,
-          "Temperature descriptor must use its property's range and unit");
+    expectException<std::invalid_argument>(
+        [&] { driver.addCapability("brightness"); });
+    expectException<std::invalid_argument>(
+        [&] { driver.addCapability("unknown"); });
+    expectException<std::invalid_argument>(
+        [&] { driver.writeCapability("brightness", 101); });
+    expectException<std::invalid_argument>(
+        [&] { driver.writeCapability("temperature", 25.0); });
+    expectException<std::invalid_argument>(
+        [&] { UniversalDeviceDriver invalid(nullptr, record); });
+    require(descriptor.getCapabilities().size() == 8 &&
+                device.get(props::light::Brightness) == 72,
+            "Rejected operations must preserve values and capabilities");
 
-  smart_home::SimulatedTemperatureSensorDriver sensor(
-      2, "SIM-TEMP", "Sensor", metadata.max);
-  require(sensor.device().get(smart_home::props::climate::Temperature) ==
-              metadata.max,
-          "Temperature driver must initialize the standard device property");
-  expectException<std::invalid_argument>([&] {
-    smart_home::SimulatedTemperatureSensorDriver(3, "SIM-TEMP-BAD", "Sensor",
-                                               metadata.max + 0.1);
-  });
+    const auto &temperature = CapabilityCatalog::temperature();
+    const auto &output = temperature.descriptor.getOperations()
+                             .front()
+                             .getOutputParameter()
+                             .value();
+    const auto &metadata = std::get<FloatMetadata>(output.getMetadata());
+    require(metadata.min == temperature.property.min_value &&
+                metadata.max == temperature.property.max_value &&
+                metadata.unit == temperature.property.unit,
+            "Temperature metadata must come from the property tag");
+
+    UniversalDeviceDriver transport(record);
+    int calls = 0;
+    transport.addCapability(
+        "on_off", [&](const std::string &id, const Value &value) {
+            require(id == "on_off" && value == Value{true},
+                    "Handler must receive the validated command");
+            ++calls;
+            throw std::runtime_error("Injected send failure");
+        });
+    expectException<std::invalid_argument>(
+        [&] { transport.writeCapability("on_off", 1); });
+    expectException<std::runtime_error>(
+        [&] { transport.writeCapability("on_off", true); });
+    require(calls == 1 && transport.device().get(props::light::State) == false,
+            "The transport handler must run once and keep reported state on "
+            "failure");
 }

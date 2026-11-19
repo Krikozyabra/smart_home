@@ -27,7 +27,7 @@ struct DeviceRecord {
     std::string physical_id;
 
     /**
-     * @brief Идентификатор драйвера, управляющего данным устройством.
+     * @brief Идентификатор протокола, через который работает устройство.
      */
     std::string driver_id;
 

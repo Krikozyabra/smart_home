@@ -6,6 +6,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 namespace smart_home {
 
 /**
@@ -18,7 +19,7 @@ struct DiscoveredDevice {
     std::string physical_id;
 
     /**
-     * @brief Идентификатор совместимого драйвера устройства.
+     * @brief Идентификатор протокола устройства.
      */
     std::string driver_id;
 
@@ -26,6 +27,9 @@ struct DiscoveredDevice {
      * @brief Имя устройства по умолчанию.
      */
     std::string default_name;
+
+    /// @brief Возможности из CapabilityCatalog, полученные при обнаружении.
+    std::vector<std::string> capability_ids{};
 
     /**
      * @brief Оператор сравнения на равенство двух обнаруженных устройств.
@@ -35,7 +39,8 @@ struct DiscoveredDevice {
     inline bool operator==(const DiscoveredDevice &right) const{
         return (physical_id == right.physical_id) &&
                (driver_id == right.driver_id) &&
-               (default_name == right.default_name);
+               (default_name == right.default_name) &&
+               (capability_ids == right.capability_ids);
     }
 };
 

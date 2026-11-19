@@ -5,7 +5,7 @@
 #include "discovery/SimulatedDiscoverySource.h"
 #include "discovery/entities/DiscoveredDevice.h"
 #include "discovery/interfaces/IDeviceDiscoverySource.h"
-#include "drivers/factories/SimulatedLightDriverFactory.h"
+#include "drivers/DeviceCreator.h"
 #include "registry/DeviceRegistry.h"
 #include "registry/DriverFactoryRegistry.h"
 #include "storage/InMemoryDeviceStorage.h"
@@ -69,8 +69,8 @@ int main() {
     {
         smart_home::InMemoryDeviceStorage persist_storage;
         smart_home::DriverFactoryRegistry factory_registry;
-        factory_registry.add(
-            std::make_unique<smart_home::SimulatedLightDriverFactory>());
+        factory_registry.add("simulated", smart_home::createSimulatedDriver);
+        const std::vector<std::string> lighting{"on_off", "brightness", "color"};
         smart_home::DeviceRegistry runtime_registry;
         device_management_test::GraphFixture fixture;
         smart_home::DeviceManager device_manager(
@@ -82,23 +82,23 @@ int main() {
             std::make_unique<smart_home::SimulatedDiscoverySource>(
                 std::vector<smart_home::DiscoveredDevice>{
                     smart_home::DiscoveredDevice{"SIM-LIGHT-001",
-                                                 "simulated.light", "Light1"},
+                                                 "simulated", "Light1", lighting},
                     smart_home::DiscoveredDevice{"SIM-LIGHT-003",
                                                  "unsupported.light", "Light5"},
                     smart_home::DiscoveredDevice{"SIM-LIGHT-002",
-                                                 "simulated.light", "Light2"}},
+                                                 "simulated", "Light2", lighting}},
                 false));
         sources_list.push_back(
             std::make_unique<smart_home::SimulatedDiscoverySource>(
                 std::vector<smart_home::DiscoveredDevice>{
                     smart_home::DiscoveredDevice{"SIM-LIGHT-001",
-                                                 "simulated.light", "Light3"}},
+                                                 "simulated", "Light3", lighting}},
                 true));
         sources_list.push_back(
             std::make_unique<smart_home::SimulatedDiscoverySource>(
                 std::vector<smart_home::DiscoveredDevice>{
                     smart_home::DiscoveredDevice{"SIM-LIGHT-001",
-                                                 "simulated.light", "Light4"}},
+                                                 "simulated", "Light4", lighting}},
                 false));
 
         smart_home::DiscoveryService ds(device_manager,
@@ -132,14 +132,14 @@ int main() {
                     report.errors.at(1).discovered_device == std::nullopt,
                 "Second error in report should be erorr with scan");
         auto sim_light_1 = persist_storage.findByPhysicalId("SIM-LIGHT-001",
-                                                            "simulated.light");
+                                                            "simulated");
         require(sim_light_1.has_value(), "First light should be found");
         require(
             sim_light_1->name == "Light1",
             "First lisht should get correct name of the first correct device");
 
         auto sim_light_2 = persist_storage.findByPhysicalId("SIM-LIGHT-002",
-                                                            "simulated.light");
+                                                            "simulated");
         require(sim_light_2.has_value(), "Second light should be found");
 
         const auto first_details = fixture.graph.getDeviceDetails(sim_light_1->local_id);
@@ -178,12 +178,12 @@ int main() {
                 "Second error in report should be erorr with scan");
 
         auto sim_light_1_repeated = persist_storage.findByPhysicalId(
-            "SIM-LIGHT-001", "simulated.light");
+            "SIM-LIGHT-001", "simulated");
         require(sim_light_1_repeated.has_value(),
                 "First light should be found after second scan");
 
         auto sim_light_2_repeated = persist_storage.findByPhysicalId(
-            "SIM-LIGHT-002", "simulated.light");
+            "SIM-LIGHT-002", "simulated");
         require(sim_light_2_repeated.has_value(),
                 "Second light should be found after second scan");
 

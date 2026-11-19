@@ -78,5 +78,5 @@ ID: Devices
 - Проверки `Device`: чтение, запись, удаление свойств, обработка пустого ключа, сохранение состояния при ошибке валидации диапазона.
 - Проверки `PropertyTag`: компиляция в `constexpr`, валидация допустимых интервалов `min`/`max` и единиц измерения.
 - Проверки `Views`: корректная проекция интерфейсов `IOnOff`, `IBrightness`, `IColor`, `ITemperature` на свойства устройства; генерация `logic_error` при отсутствии свойства.
-- Драйверы `SimulatedLightDriver` и `SimulatedTemperatureSensorDriver` создают `Device` без наследования от `Light` и `TemperatureSensor`.
+- `UniversalDeviceDriver` создаёт `Device` с набором возможностей из `CapabilityCatalog`.
 - Тесты `CommandDispatcherTests`, `DeviceManagerTests`, `DeviceRegistryTests`, `FactoriesTests` собираются и завершаются успешно.

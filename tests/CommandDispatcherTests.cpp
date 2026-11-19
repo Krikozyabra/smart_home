@@ -3,8 +3,7 @@
 #include "devices/PropertyTags.h"
 #include "devices/types/Color.h"
 #include "drivers/DeviceDriverBase.h"
-#include "drivers/SimulatedLightDriver.h"
-#include "drivers/SimulatedTemperatureSensorDriver.h"
+#include "drivers/UniversalDeviceDriver.h"
 #include "execution/CommandDispatcher.h"
 
 #include <memory>
@@ -42,10 +41,18 @@ int main() {
 
   smart_home::CommandDispatcher command_dispatcher(registry);
 
-  registry.add(std::make_unique<smart_home::SimulatedLightDriver>(
-      0, "AC:12:BD", "Light1", false, 50, Color{100, 50, 200}));
-  registry.add(std::make_unique<smart_home::SimulatedTemperatureSensorDriver>(
-      1, "D1:A0:67", "TemperatureSensor in bath", 23.0));
+  auto light = std::make_unique<smart_home::UniversalDeviceDriver>(
+      smart_home::DeviceRecord{0, "AC:12:BD", "simulated", "Light1"});
+  for (const auto *capability : {"on_off", "brightness", "color"})
+    light->addCapability(capability);
+  light->device().set(smart_home::props::light::Rgb, Color{100, 50, 200});
+  auto *light_driver = light.get();
+  registry.add(std::move(light));
+
+  auto sensor = std::make_unique<smart_home::UniversalDeviceDriver>(
+      smart_home::DeviceRecord{1, "D1:A0:67", "simulated", "TemperatureSensor in bath"});
+  sensor->addCapability("temperature");
+  registry.add(std::move(sensor));
 
   smart_home::Command color_get(0, "color.get", {});
   smart_home::Command color_get_with_arg(
@@ -206,6 +213,14 @@ int main() {
       [&] { command_dispatcher.execute(color_set_with_int); });
   expectException<std::invalid_argument>(
       [&] { command_dispatcher.execute(color_set_for_temperature_sensor); });
+
+  light_driver->addCapability("battery");
+  light_driver->device().set(smart_home::props::security::Battery, 84);
+  require(command_dispatcher.execute({0, "battery.get", {}}) == smart_home::Value{84},
+          "Dynamically added capabilities must be dispatchable");
+  expectException<std::invalid_argument>([&] {
+    command_dispatcher.execute({0, "battery.get", {84}});
+  });
 
   // 256 fits the custom descriptor's declared range but would wrap to 0.
   registry.add(std::make_unique<WideBrightnessDriver>());
