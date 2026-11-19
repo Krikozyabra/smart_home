@@ -12,7 +12,7 @@
 | Обработка звука | [Описание](audio/) | `audio` |
 | Инвентарь устройств | [Описание](storage/spec.md) | `storage` |
 | Регистрация и восстановление устройств | [Описание](device_management/spec.md) | `device_management` |
-| Представление устройств и свойств | [Описание](devices/spec.md) | `devices` |
+| Представление устройств и свойств | [Описание](devices/) | `devices` |
 | Драйверы и протоколы | [Описание](drivers/spec.md) | `drivers` |
 | Персистентность и поколения | [Описание](persistence/) | `persistence` |
 | Основной цикл программы | [Описание](runtime/) | `runtime` |
