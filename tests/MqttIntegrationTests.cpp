@@ -1,5 +1,10 @@
 #include "mqtt/MosquittoClient.h"
+#include "DeviceManagementTestSupport.h"
 #include "TestUtil.h"
+#include "device_management/DeviceManager.h"
+#include "drivers/Zigbee2Mqtt.h"
+#include "execution/CommandDispatcher.h"
+#include "storage/InMemoryDeviceStorage.h"
 
 #include <arpa/inet.h>
 #include <cerrno>
@@ -138,6 +143,88 @@ private:
 void confirmed(IMqttClient& client, MqttDeliveryToken token) {
     require(client.waitForOperation(token, 3s).status == MqttOperationStatus::Completed,
             "Broker confirmation missing.");
+}
+
+void zigbeeRoundTrip(LocalBroker &broker) {
+    using namespace smart_home;
+    const std::string topic = "zigbee2mqtt/living_room/lamp";
+    MosquittoClient client;
+    Zigbee2Mqtt transport(client);
+    DriverFactoryRegistry creators;
+    creators.add("zigbee", transport.creator());
+    device_management_test::GraphFixture fixture;
+    InMemoryDeviceStorage storage;
+    const auto record = storage.insert("living_room/lamp", "zigbee", "Mixed device");
+    const auto id = record.local_id;
+    fixture.graph.addDevice({id, record.name});
+    for (const auto *capability : {"on_off", "brightness", "color", "temperature",
+                                   "humidity", "contact", "battery", "power"})
+        fixture.graph.addDeviceAbility(id, capability);
+
+    DeviceRegistry registry;
+    DeviceManager manager(storage, creators, registry, fixture.graph);
+    CommandDispatcher dispatcher(registry);
+    require(manager.restoreStoredDevices() == 1 && !client.isConnected(),
+            "Zigbee must restore capabilities without contacting the broker");
+    require(dispatcher.execute({id, "brightness.get", {}}) == Value{50},
+            "A cold Zigbee device must provide its initial state");
+    expectException<MqttException>([&] { dispatcher.execute({id, "on_off.set", {true}}); });
+
+    client.connect(broker.config());
+    confirmed(client, client.subscribe(topic));
+    MosquittoClient bridge;
+    bridge.connect(broker.config());
+    confirmed(bridge, bridge.subscribe(topic + "/set", MqttQoS::AtLeastOnce));
+
+    const auto command = [&](const char *operation, Value value, const std::string &expected) {
+        require(!dispatcher.execute({id, operation, {value}}), "A write must return no value");
+        MqttMessage message;
+        require(bridge.readFor(3s, message) && message.topic == topic + "/set" &&
+                    std::string(message.payload.begin(), message.payload.end()) == expected &&
+                    !message.retain,
+                "A write must publish the expected Zigbee2MQTT command");
+    };
+    command("on_off.set", true, R"({"state":"ON"})");
+    command("brightness.set", 75, R"({"brightness":191})");
+    command("color.set", Color{12, 34, 56}, R"({"color":{"r":12,"g":34,"b":56}})");
+    require(dispatcher.execute({id, "on_off.get", {}}) == Value{false} &&
+                dispatcher.execute({id, "brightness.get", {}}) == Value{50} &&
+                dispatcher.execute({id, "color.get", {}}) == Value{Color{255, 255, 255}},
+            "Command publication must leave reported state until telemetry is received");
+
+    auto &driver = *registry.find(id);
+    const auto telemetry = [&](const std::string &payload) {
+        confirmed(bridge, bridge.publish(topic, {payload.begin(), payload.end()},
+                                         MqttQoS::AtLeastOnce));
+        MqttMessage message;
+        require(client.readFor(3s, message), "Zigbee telemetry did not arrive");
+        return transport.applyTelemetry(driver, message);
+    };
+    require(telemetry(R"({"state":"ON","brightness":191,"color":{"r":12,"g":34,"b":56},"temperature":27.5,"humidity":44.5,"contact":false,"battery":80,"power":2.75})"),
+            "Valid telemetry must update the device");
+    require(dispatcher.execute({id, "on_off.get", {}}) == Value{true} &&
+                dispatcher.execute({id, "brightness.get", {}}) == Value{75} &&
+                dispatcher.execute({id, "color.get", {}}) == Value{Color{12, 34, 56}} &&
+                dispatcher.execute({id, "temperature.get", {}}) == Value{27.5} &&
+                dispatcher.execute({id, "humidity.get", {}}) == Value{44.5} &&
+                dispatcher.execute({id, "contact.get", {}}) == Value{true} &&
+                dispatcher.execute({id, "battery.get", {}}) == Value{80} &&
+                dispatcher.execute({id, "power.get", {}}) == Value{2.75},
+            "Reads must return the decoded values of all eight capabilities");
+    require(!telemetry(R"({"state":"OFF"} trailing)") &&
+                telemetry(R"({"temperature":210.0,"battery":"99","contact":true})") &&
+                dispatcher.execute({id, "on_off.get", {}}) == Value{true} &&
+                dispatcher.execute({id, "temperature.get", {}}) == Value{27.5} &&
+                dispatcher.execute({id, "battery.get", {}}) == Value{80} &&
+                dispatcher.execute({id, "contact.get", {}}) == Value{false},
+            "Invalid data must preserve previous values and valid fields must apply");
+    require(telemetry(R"({"color_mode":"hs","color":{"x":0.3127,"y":0.329,"hue":120,"saturation":100}})") &&
+                dispatcher.execute({id, "color.get", {}}) == Value{Color{0, 255, 0}},
+            "Hue and saturation telemetry must convert to RGB");
+    require(telemetry(R"({"color":{"x":0.3127,"y":0.329}})"),
+            "CIE xy telemetry must convert to RGB");
+    require(!transport.applyTelemetry(driver, {topic + "/set", {'{', '}'}}),
+            "A command topic must not change reported state");
 }
 
 void roundTrips(LocalBroker& broker) {
@@ -305,6 +392,7 @@ int main(int argc, char* argv[]) {
         require(argc == 2 || argc == 3, "Pass the Mosquitto broker executable and optionally the demo.");
         LocalBroker broker(argv[1]);
         roundTrips(broker);
+        zigbeeRoundTrip(broker);
         retained(broker);
         limitsAndConcurrency(broker);
         reconnection(broker);

@@ -1,3 +1,8 @@
+add_executable(device_tests DeviceTests.cpp)
+target_link_libraries(device_tests PRIVATE SmartHome::Devices)
+set_target_properties(device_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+add_test(NAME device_tests COMMAND device_tests)
+
 add_executable(command_dispatcher_tests
 CommandDispatcherTests.cpp
 )
@@ -159,7 +164,8 @@ if(SMART_HOME_MQTT_INTEGRATION_TESTS AND UNIX)
     find_program(SMART_HOME_MOSQUITTO_EXECUTABLE NAMES mosquitto)
     if(SMART_HOME_MOSQUITTO_EXECUTABLE)
         add_executable(mqtt_integration_tests MqttIntegrationTests.cpp)
-        target_link_libraries(mqtt_integration_tests PRIVATE SmartHome::Mqtt Threads::Threads)
+        target_link_libraries(mqtt_integration_tests PRIVATE SmartHome::Mqtt
+            SmartHome::Drivers SmartHome::Execution SmartHome::DeviceManagement Threads::Threads)
         set(MQTT_DEMO_TEST_ARGUMENT)
         if(TARGET smart_home_mqtt_demo)
             set(MQTT_DEMO_TEST_ARGUMENT $<TARGET_FILE:smart_home_mqtt_demo>)

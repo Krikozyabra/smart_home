@@ -36,6 +36,9 @@ class DeviceDriverBase : public IDeviceDriver {
     }
 
   protected:
+    /// @brief Возвращает дескриптор для изменения владельцем драйвера.
+    DeviceDescriptor &mutableDescriptor() noexcept { return descriptor_object; }
+
     /**
      * @brief Защищенный конструктор базового драйвера устройства.
      * @param c_device Уникальный указатель на объект устройства Device.

@@ -249,4 +249,37 @@ std::vector<DeviceRecord> SQLiteDeviceStorage::getAll() const {
         return result;
     throw std::runtime_error(std::string(sqlite3_errmsg(database)));
 }
+
+std::size_t SQLiteDeviceStorage::replaceDriverIds(
+    const std::vector<std::string> &previous_ids, const std::string &protocol_id) {
+    ensureOpen();
+    const auto validate = [](const std::string &id) {
+        if (id.empty() || id.find('\0') != std::string::npos)
+            throw std::invalid_argument("Invalid driver ID");
+    };
+    validate(protocol_id);
+    if (previous_ids.empty())
+        return 0;
+    if (previous_ids.size() >=
+        static_cast<std::size_t>(sqlite3_limit(database, SQLITE_LIMIT_VARIABLE_NUMBER, -1)))
+        throw std::invalid_argument("Too many driver IDs to replace");
+    std::string sql = "UPDATE devices SET driver_id = ?1 WHERE driver_id <> ?1 AND driver_id IN (";
+    for (const auto &id : previous_ids) {
+        validate(id);
+        sql += "?,";
+    }
+    sql.back() = ')';
+    sqlite3_stmt *raw = nullptr;
+    if (sqlite3_prepare_v2(database, sql.c_str(), -1, &raw, nullptr) != SQLITE_OK)
+        throw std::runtime_error("Cannot prepare driver ID migration: " +
+                                 std::string(sqlite3_errmsg(database)));
+    const StatementPtr statement(raw, sqlite3_finalize);
+    bindText(database, statement.get(), 1, protocol_id);
+    for (std::size_t i = 0; i < previous_ids.size(); ++i)
+        bindText(database, statement.get(), static_cast<int>(i) + 2, previous_ids[i]);
+    if (sqlite3_step(statement.get()) != SQLITE_DONE)
+        throw std::runtime_error("Cannot migrate driver IDs: " +
+                                 std::string(sqlite3_errmsg(database)));
+    return static_cast<std::size_t>(sqlite3_changes(database));
+}
 } // namespace smart_home

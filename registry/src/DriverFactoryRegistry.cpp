@@ -1,42 +1,28 @@
 #include "registry/DriverFactoryRegistry.h"
-#include "drivers/factories/IDeviceDriverFactory.h"
-#include <cstddef>
-#include <memory>
+
 #include <stdexcept>
-#include <string>
+#include <utility>
 
 namespace smart_home {
 
-void DriverFactoryRegistry::add(std::unique_ptr<IDeviceDriverFactory> factory) {
-  if (factory == nullptr)
-    throw std::invalid_argument(
-        "DriverFactoryRegistry cannot accept nullptr factory");
-  if (factory->getDriverId().empty())
-    throw std::invalid_argument("Factory must not have empty linked driver id");
-  auto [iterator, inserted] =
-      factories.try_emplace(factory->getDriverId(), std::move(factory));
-  if (!inserted)
-    throw std::runtime_error("Factory for driver id = '" +
-                             factory->getDriverId() + "' already in registry");
+void DriverFactoryRegistry::add(const std::string &driver_id,
+                                DeviceCreator creator) {
+    if (driver_id.empty() || !creator)
+        throw std::invalid_argument(
+            "Protocol ID and device creator must be provided");
+    if (!creators_.try_emplace(driver_id, std::move(creator)).second)
+        throw std::runtime_error("Device creator already registered: " +
+                                 driver_id);
 }
 
-IDeviceDriverFactory *
-DriverFactoryRegistry::find(const std::string &driver_id) {
-  auto iterator = factories.find(driver_id);
-  if (iterator == factories.end())
-    return nullptr;
-  return iterator->second.get();
-}
-
-const IDeviceDriverFactory *
+const DeviceCreator *
 DriverFactoryRegistry::find(const std::string &driver_id) const {
-  auto iterator = factories.find(driver_id);
-  if (iterator == factories.end())
-    return nullptr;
-  return iterator->second.get();
+    const auto found = creators_.find(driver_id);
+    return found == creators_.end() ? nullptr : &found->second;
 }
+
 std::size_t DriverFactoryRegistry::size() const noexcept {
-  return factories.size();
+    return creators_.size();
 }
 
 } // namespace smart_home

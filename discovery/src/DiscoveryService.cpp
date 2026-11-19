@@ -47,7 +47,8 @@ DiscoveryReport DiscoveryService::scanOnce() {
             report.devices_found++;
             try {
                 device_manager.registerDiscoveredDevice(
-                    device.physical_id, device.driver_id, device.default_name);
+                    device.physical_id, device.driver_id, device.default_name,
+                    device.capability_ids);
                 report.devices_processed++;
             } catch (const UnsupportedDriverError &error) {
                 logging::log(logging::Level::Warn, "Discovery", "Unsupported driver; skipping discovered device.", context);

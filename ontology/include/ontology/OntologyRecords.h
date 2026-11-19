@@ -35,5 +35,11 @@ struct DeviceOntologyDetails {
     OntologyDeviceRecord device; ///< Локальный ключ и название устройства.
     std::string room_id; ///< Ключ комнаты; пустой при отсутствии связи.
     std::vector<std::string> ability_ids; ///< Отсортированные ключи возможностей.
+
+    /// @brief Сравнивает устройство, комнату и связи с возможностями.
+    bool operator==(const DeviceOntologyDetails &other) const {
+        return device == other.device && room_id == other.room_id &&
+               ability_ids == other.ability_ids;
+    }
 };
 } // namespace smart_home::ontology

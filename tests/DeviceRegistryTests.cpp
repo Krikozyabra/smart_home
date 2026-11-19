@@ -1,9 +1,7 @@
 #include "TestUtil.h"
-#include "devices/types/Color.h"
-#include "drivers/SimulatedLightDriver.h"
+#include "drivers/DeviceCreator.h"
 #include "registry/DeviceRegistry.h"
 
-#include <memory>
 #include <stdexcept>
 
 int main() {
@@ -15,8 +13,8 @@ int main() {
   require(const_registry.find(1000) == nullptr,
           "Unstored device in const registry id must return nullptr");
 
-  registry.add(std::make_unique<smart_home::SimulatedLightDriver>(
-      0, "SIM-LIGHT-001", "LIGHT", false, 50, Color{255, 255, 255}));
+  const smart_home::DeviceRecord record{0, "SIM-LIGHT-001", "simulated", "LIGHT"};
+  registry.add(smart_home::createSimulatedDriver(record));
 
   require(registry.size() == 1, "Registry must insert corret device");
   require(registry.find(0) != nullptr, "Registry must find inserted driver");
@@ -24,8 +22,7 @@ int main() {
           "Const registry must find inserted driver");
 
   expectException<std::runtime_error>([&] {
-    registry.add(std::make_unique<smart_home::SimulatedLightDriver>(
-        0, "SIM-LIGHT-001", "LIGHT", false, 50, Color{255, 255, 255}));
+    registry.add(smart_home::createSimulatedDriver(record));
   });
 
   expectException<std::invalid_argument>([&] { registry.add(nullptr); });

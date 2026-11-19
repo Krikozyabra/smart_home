@@ -1,10 +1,10 @@
 #include "DeviceManagementTestSupport.h"
 #include "TestUtil.h"
 #include "device_management/DeviceManager.h"
-#include "devices/interfaces/IBrightness.h"
-#include "devices/interfaces/IOnOff.h"
-#include "drivers/SimulatedLightDriver.h"
-#include "drivers/factories/SimulatedLightDriverFactory.h"
+#include "devices/views/BrightnessView.h"
+#include "devices/views/OnOffView.h"
+#include "drivers/CapabilityCatalog.h"
+#include "drivers/UniversalDeviceDriver.h"
 #include "storage/InMemoryDeviceStorage.h"
 
 #include <functional>
@@ -58,18 +58,30 @@ public:
 };
 
 struct FactoryFailure : std::runtime_error { using std::runtime_error::runtime_error; };
-class ControlledFactory final : public IDeviceDriverFactory {
+class FixedLightDriver final : public DeviceDriverBase {
 public:
-    mutable int calls = 0;
-    std::function<std::unique_ptr<IDeviceDriver>(const DeviceRecord &)> action = light;
-    static std::unique_ptr<IDeviceDriver> light(const DeviceRecord &r) {
-        return std::make_unique<SimulatedLightDriver>(r.local_id, r.physical_id, r.name,
-                                                     false, 50, Color{255, 255, 255});
+    explicit FixedLightDriver(const DeviceRecord &record)
+        : DeviceDriverBase(std::make_unique<Device>(record.local_id, record.name),
+                           {record.local_id, record.physical_id, record.name,
+                            {CapabilityCatalog::onOff().descriptor,
+                             CapabilityCatalog::brightness().descriptor,
+                             CapabilityCatalog::color().descriptor}}) {
+        for (const auto &capability : descriptor().getCapabilities()) {
+            const auto &entry = *CapabilityCatalog::find(capability.getId());
+            entry.store(device(), entry.initial_value);
+        }
     }
-    std::string getDriverId() const override { return "test.driver"; }
-    std::unique_ptr<IDeviceDriver> create(const DeviceRecord &r) const override {
+};
+
+struct ControlledFactory {
+    int calls = 0;
+    DeviceCreator action = light;
+    static std::unique_ptr<IDeviceDriver> light(const DeviceRecord &record) {
+        return std::make_unique<FixedLightDriver>(record);
+    }
+    std::unique_ptr<IDeviceDriver> operator()(const DeviceRecord &record) {
         ++calls;
-        return action(r);
+        return action(record);
     }
 };
 
@@ -79,11 +91,9 @@ struct Fixture {
     InMemoryDeviceStorage storage;
     DriverFactoryRegistry factories;
     DeviceRegistry devices;
-    ControlledFactory *factory;
+    ControlledFactory factory;
     Fixture() {
-        auto value = std::make_unique<ControlledFactory>();
-        factory = value.get();
-        factories.add(std::move(value));
+        factories.add("test.driver", std::ref(factory));
     }
     DeviceRecord insert(const std::string &physical = "a") {
         return storage.insert(physical, "test.driver", "Light " + physical);
@@ -102,15 +112,15 @@ void registrationAndRepair() {
     {
         DeviceManager manager(f.storage, f.factories, f.devices, f.graph);
         require(f.storage.getAll().empty() && f.devices.size() == 0 &&
-                    f.graph.getAllDevices().empty() && f.factory->calls == 0,
+                    f.graph.getAllDevices().empty() && f.factory.calls == 0,
                 "Constructor must have no side effects");
         auto record = manager.registerDiscoveredDevice("a", "test.driver", "Saved name");
         require(f.storage.getAll().size() == 1 && f.devices.size() == 1,
                 "First registration must create inventory and driver");
         f.complete(record);
         auto *driver = f.devices.find(record.local_id);
-        auto &brightness = dynamic_cast<IBrightness &>(driver->device());
-        auto &power = dynamic_cast<IOnOff &>(driver->device());
+        auto brightness = driver->device().view<BrightnessView>();
+        auto power = driver->device().view<OnOffView>();
         brightness.setBrightness(83);
         power.setOn(true);
         f.database.graph.addRoom({"custom", "User room"});
@@ -118,7 +128,7 @@ void registrationAndRepair() {
         const auto catalog = f.graph.getAllAbilities();
         require(manager.registerDiscoveredDevice("a", "test.driver", "Ignored") == record,
                 "Repeated registration must return the stored record");
-        require(f.factory->calls == 1 && f.devices.find(record.local_id) == driver &&
+        require(f.factory.calls == 1 && f.devices.find(record.local_id) == driver &&
                     brightness.getBrightness() == 83 && power.isOn(),
                 "Repeated registration must preserve driver and its values");
         require(f.graph.nodes_added == 1 && f.graph.links_added == 3 &&
@@ -134,7 +144,7 @@ void registrationAndRepair() {
         f.database.graph.deleteDevice(record.local_id);
         require(manager.restoreStoredDevices() == 0, "Graph-only restore must add zero drivers");
         f.complete(record);
-        require(!f.graph.getDeviceRoom(record.local_id) && f.factory->calls == 1,
+        require(!f.graph.getDeviceRoom(record.local_id) && f.factory.calls == 1,
                 "Manager must not assign rooms or recreate active drivers");
         f.database.graph.deleteDevice(record.local_id);
         manager.registerDiscoveredDevice("a", "test.driver", "Ignored");
@@ -155,21 +165,21 @@ void restoreAndPrepareFailures() {
     auto *existing_driver = f.devices.find(existing.local_id);
     f.database.graph.addDevice({existing.local_id, existing.name});
     // InMemoryDeviceStorage orders these by physical key, so a is prepared first.
-    f.factory->action = [&](const DeviceRecord &r) {
+    f.factory.action = [&](const DeviceRecord &r) {
         if (r.local_id == b.local_id) throw FactoryFailure("Factory failed");
         return ControlledFactory::light(r);
     };
     expectException<FactoryFailure>([&] { manager.restoreStoredDevices(); });
-    require(f.factory->calls == 2 && f.devices.size() == 1 && f.graph.nodes_added == 0 &&
+    require(f.factory.calls == 2 && f.devices.size() == 1 && f.graph.nodes_added == 0 &&
                 f.devices.find(existing.local_id) == existing_driver &&
                 f.graph.getDeviceAbilities(existing.local_id).empty(),
             "Late preparation failure must leave registry and graph unchanged");
-    f.factory->action = ControlledFactory::light;
+    f.factory.action = ControlledFactory::light;
     require(manager.restoreStoredDevices() == 2, "Restore must count newly added drivers");
     f.complete(a); f.complete(b); f.complete(existing);
     auto *active = f.devices.find(a.local_id);
     require(manager.restoreStoredDevices() == 0 && f.devices.find(a.local_id) == active &&
-                f.factory->calls == 4 && f.storage.getAll().size() == 3,
+                f.factory.calls == 4 && f.storage.getAll().size() == 3,
             "Repeated restore must preserve drivers and inventory");
     f.database.graph.removeDeviceAbility(a.local_id, "brightness");
     f.database.graph.deleteDevice(b.local_id);
@@ -195,7 +205,7 @@ void unknownFactory() {
     f.insert("a");
     f.storage.insert("z", "unknown.driver", "Unknown");
     expectException<std::runtime_error>([&] { manager.restoreStoredDevices(); });
-    require(f.factory->calls == 1 && f.devices.size() == 0 && f.graph.nodes_added == 0,
+    require(f.factory.calls == 1 && f.devices.size() == 0 && f.graph.nodes_added == 0,
             "Unknown late factory must cancel all prepared drivers");
 }
 
@@ -203,7 +213,7 @@ void nullAndThrowingFactory() {
     for (bool null_result : {false, true}) {
         Fixture f;
         DeviceManager manager(f.storage, f.factories, f.devices, f.graph);
-        f.factory->action = [=](const DeviceRecord &) -> std::unique_ptr<IDeviceDriver> {
+        f.factory.action = [=](const DeviceRecord &) -> std::unique_ptr<IDeviceDriver> {
             if (null_result) return nullptr;
             throw FactoryFailure("Factory failed after insert");
         };
@@ -212,7 +222,7 @@ void nullAndThrowingFactory() {
         else expectException<FactoryFailure>(register_device);
         require(f.storage.getAll().size() == 1 && f.devices.size() == 0 && f.graph.nodes_added == 0,
                 "Failed factory must leave the inventory record available for retry");
-        f.factory->action = ControlledFactory::light;
+        f.factory.action = ControlledFactory::light;
         auto record = manager.registerDiscoveredDevice("a", "test.driver", "Ignored");
         require(record.name == "Saved" && f.storage.getAll().size() == 1,
                 "Factory retry must reuse the saved record");
@@ -220,7 +230,7 @@ void nullAndThrowingFactory() {
     }
     Fixture f;
     f.insert("a"); f.insert("b");
-    f.factory->action = [](const DeviceRecord &r) {
+    f.factory.action = [](const DeviceRecord &r) {
         return r.physical_id == "b" ? nullptr : ControlledFactory::light(r);
     };
     DeviceManager manager(f.storage, f.factories, f.devices, f.graph);
@@ -245,7 +255,7 @@ void strictGraphChecks() {
                 else manager.registerDiscoveredDevice("a", "test.driver", "Ignored");
             };
             expectException<std::runtime_error>(attempt);
-            require(f.devices.size() == 1 && f.factory->calls == 1,
+            require(f.devices.size() == 1 && f.factory.calls == 1,
                     "Graph validation failure must retain the active driver");
             if (problem == "name") {
                 require(f.graph.getDevice(record.local_id)->name == "Wrong", "Manager must not overwrite mismatched names");
@@ -259,7 +269,7 @@ void strictGraphChecks() {
             }
             attempt();
             f.complete(record);
-            require(f.factory->calls == 1, "Graph repair must preserve the existing driver");
+            require(f.factory.calls == 1, "Graph repair must preserve the existing driver");
         }
     }
 }
@@ -277,13 +287,13 @@ void partialGraphFailure() {
         };
         expectException<std::runtime_error>(attempt);
         const auto records = f.storage.getAll();
-        const int created = f.factory->calls;
+        const int created = f.factory.calls;
         auto *driver = f.devices.find(records.front().local_id);
         require(f.devices.size() == records.size() && f.graph.links_added == (restore ? 4 : 1),
                 "Failure must retain all drivers and successful graph writes");
         require(attempt() == 0, "Retry adds no drivers, even after incomplete graph restore");
         for (const auto &r : records) f.complete(r);
-        require(f.factory->calls == created && f.devices.find(records.front().local_id) == driver &&
+        require(f.factory.calls == created && f.devices.find(records.front().local_id) == driver &&
                     f.graph.nodes_added == static_cast<int>(records.size()) &&
                     f.graph.links_added == static_cast<int>(records.size() * 3),
                 "Retry must complete only missing nodes and links");
@@ -296,7 +306,7 @@ void registryFailureAndRetry() {
     const auto b = f.insert("b");
     // The manager delegates driver identity to the factory; this faulty factory
     // creates a duplicate registry key after the first driver was added.
-    f.factory->action = [&](const DeviceRecord &r) {
+    f.factory.action = [&](const DeviceRecord &r) {
         auto wrong = r;
         wrong.local_id = a.local_id;
         return ControlledFactory::light(wrong);
@@ -312,7 +322,7 @@ void registryFailureAndRetry() {
     require(f.storage.getAll().size() == 2 && f.devices.size() == 1 &&
                 f.graph.nodes_added == 0,
             "Registration failure must preserve inventory without writing the graph");
-    f.factory->action = ControlledFactory::light;
+    f.factory.action = ControlledFactory::light;
     require(manager.restoreStoredDevices() == 1 && f.devices.find(a.local_id) == active,
             "Retry after registry failure must create only the missing driver");
     f.complete(a); f.complete(b);
@@ -329,12 +339,48 @@ public:
 void customCapability() {
     Fixture f;
     f.database.graph.addAbility({"custom.feature", "Custom feature", "custom"});
-    f.factory->action = [](const DeviceRecord &r) { return std::make_unique<CustomDriver>(r); };
+    f.factory.action = [](const DeviceRecord &r) { return std::make_unique<CustomDriver>(r); };
     DeviceManager manager(f.storage, f.factories, f.devices, f.graph);
     const auto record = manager.registerDiscoveredDevice("custom", "test.driver", "Custom device");
     require(f.graph.getDeviceDetails(record.local_id)->ability_ids ==
                 std::vector<std::string>{"custom.feature"},
             "Capabilities must come from the descriptor without driver or type mappings");
+}
+
+void protocolRestoration() {
+    GraphFixture fixture;
+    InMemoryDeviceStorage storage;
+    DriverFactoryRegistry creators;
+    creators.add("simulated", createSimulatedDriver);
+    DeviceRegistry active;
+    DeviceManager manager(storage, creators, active, fixture.graph);
+    expectException<std::invalid_argument>([&] {
+        manager.registerDiscoveredDevice("mixed", "simulated", "Mixed", {"unknown"});
+    });
+    require(storage.getAll().empty(), "Invalid discovery metadata must not insert a record");
+
+    const auto record = manager.registerDiscoveredDevice(
+        "mixed", "simulated", "Mixed", {"on_off", "temperature"});
+    auto *driver = active.find(record.local_id);
+    driver->writeCapability("on_off", true);
+    require(manager.registerDiscoveredDevice("mixed", "simulated", "Ignored",
+                                              {"on_off", "battery"}) == record,
+            "Rediscovery must preserve inventory identity");
+    require(active.find(record.local_id) == driver &&
+                driver->device().getProperty("on_off.state") == Value{true} &&
+                fixture.graph.getDeviceDetails(record.local_id)->ability_ids ==
+                    std::vector<std::string>{"battery", "on_off", "temperature"},
+            "Rediscovery must add capabilities without losing active state");
+
+    DeviceRegistry cold;
+    DeviceManager restarted(storage, creators, cold, fixture.graph);
+    require(restarted.restoreStoredDevices() == 1 && restarted.restoreStoredDevices() == 0,
+            "Cold restoration must create each protocol driver once");
+    const auto &restored = cold.find(record.local_id)->device();
+    require(restored.getProperty("on_off.state") == Value{false} &&
+                restored.getProperty("temperature.celsius") == Value{23.0} &&
+                restored.getProperty("battery.level") == Value{0},
+            "Cold restoration must initialize all graph capabilities");
 }
 } // namespace
 
@@ -347,4 +393,5 @@ int main() {
     partialGraphFailure();
     registryFailureAndRetry();
     customCapability();
+    protocolRestoration();
 }

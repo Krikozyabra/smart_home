@@ -6,7 +6,7 @@
 
 ## 1. Цели, границы и концепция Capability-Based
 
-Модуль `device_management` координирует инвентарь (`IDeviceStorage`), реестр фабрик (`DriverFactoryRegistry`), реестр активных драйверов (`DeviceRegistry`) и семантический граф онтологии (`ontology::IOntologyStorage`).
+Модуль `device_management` координирует инвентарь (`IDeviceStorage`), реестр создателей протоколов (`DriverFactoryRegistry`), реестр активных драйверов (`DeviceRegistry`) и семантический граф онтологии (`ontology::IOntologyStorage`).
 
 Архитектура построена на **компонентной модели возможностей (Capability-Based)**:
 - Устройства не привязываются к жестким статическим категориям (типам вроде `"light"` или `"sensor"`).
@@ -60,7 +60,8 @@ class DeviceManager {
 
     DeviceRecord registerDiscoveredDevice(const std::string &physical_id,
                                           const std::string &driver_id,
-                                          const std::string &default_name);
+                                          const std::string &default_name,
+                                          const std::vector<std::string> &capability_ids = {});
 };
 
 } // namespace smart_home
@@ -75,14 +76,14 @@ class DeviceManager {
 ## 3. Алгоритмы и порядок операций
 
 ### 3.1. Регистрация обнаруженного устройства (`registerDiscoveredDevice`)
-1. **Проверка доступности фабрики**:
-   Поиск `factory_registry.find(driver_id)`. Если фабрика не найдена, выбрасывается `UnsupportedDriverError` до любых обращений к хранилищу и онтологии.
+1. **Проверка создателя и списка возможностей**
+   Поиск `factory_registry.find(driver_id)` возвращает callable. Неизвестный протокол даёт `UnsupportedDriverError` до обращений к хранилищу и онтологии.
 2. **Получение или создание инвентарной записи**:
    Вызывается `getOrCreate(physical_id, driver_id, default_name)`. При повторной регистрации возвращается существующая запись, `default_name` не меняет имя.
 3. **Получение или инстанцирование драйвера**:
    Проверяется наличие активного драйвера в `device_registry.find(record.local_id)`.
-   - Если драйвер уже активен, он сохраняется без изменений (сохраняя текущие runtime-значения).
-   - Если драйвер отсутствует, вызывается `factory->create(record)`. Если фабрика вернула `nullptr`, выбрасывается `std::logic_error`. Созданный экземпляр передаётся в `device_registry.add(...)`.
+   - Активный драйвер сохраняет текущие значения и получает обнаруженные возможности.
+   - Для отсутствующего драйвера менеджер вызывает `(*creator)(record)`, добавляет возможности и передаёт экземпляр в `device_registry.add(...)`. Пустой результат вызывает `std::logic_error`.
 4. **Синхронизация с онтологией (`syncDeviceOntology`)**:
    - Получение дескриптора активного драйвера (`driver->descriptor()`).
    - Проверка наличия узла устройства: `ontology_storage.getDevice(record.local_id)`.
@@ -108,8 +109,8 @@ class DeviceManager {
    Для каждой записи `record`:
    - Если устройство уже активно в `device_registry`, подготовка пропускается.
    - Иначе:
-     - Проверяется фабрика `factory_registry.find(record.driver_id)`. Если отсутствует — `std::runtime_error` ("No factory registered for driver id").
-     - Создаётся драйвер: `auto driver = factory->create(record)`. Если `nullptr` — `std::logic_error`.
+     - Менеджер вызывает создателя из `factory_registry.find(record.driver_id)`. Неизвестный протокол вызывает `std::runtime_error`, пустой результат вызывает `std::logic_error`.
+     - Универсальный драйвер получает возможности из `ontology_storage.getDeviceAbilities(record.local_id)`, если узел уже существует.
      - Драйвер сохраняется в `prepared_drivers`.
    - **Гарантия**: сбой при подготовке любого драйвера отменяет всю операцию, ни один драйвер не попадает в `device_registry`, а онтология остаётся нетронутой.
 3. **Фаза 2: Регистрация драйверов**:

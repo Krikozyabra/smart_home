@@ -80,6 +80,19 @@ class DeviceDescriptor {
     const std::vector<CapabilityDescriptor>& getCapabilities() const {
         return this->capabilities;
     }
+
+    /// @brief Возвращает возможность по ID или nullptr.
+    const CapabilityDescriptor *findCapability(const std::string &id) const {
+        for (const auto &capability : capabilities)
+            if (capability.getId() == id)
+                return &capability;
+        return nullptr;
+    }
+
+    /// @brief Переносит дескриптор возможности в список устройства.
+    void addCapability(CapabilityDescriptor capability) {
+        capabilities.push_back(std::move(capability));
+    }
 };
 
 } // namespace smart_home

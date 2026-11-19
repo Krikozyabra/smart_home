@@ -1,10 +1,6 @@
 add_library(smart_home_execution STATIC
     src/CommandDispatcher.cpp
     src/CommandValidation.cpp
-    src/handlers/ColorHandlers.cpp
-    src/handlers/OnOffHandlers.cpp
-    src/handlers/BrightnessHandlers.cpp
-    src/handlers/TemperatureHandlers.cpp
 )
 
 add_library(SmartHome::Execution ALIAS smart_home_execution)

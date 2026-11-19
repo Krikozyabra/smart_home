@@ -13,9 +13,9 @@ int main() {
 
     std::vector<smart_home::DiscoveredDevice> devices_for_sds;
     devices_for_sds.push_back(smart_home::DiscoveredDevice{
-        "SIM-LIGHT-001", "simulated.light", "New Light"});
+        "SIM-LIGHT-001", "simulated", "New Light", {"on_off"}});
     devices_for_sds.push_back(
-        smart_home::DiscoveredDevice{"SIM-TS-001", "simulated.ts", "New TS"});
+        smart_home::DiscoveredDevice{"SIM-TS-001", "simulated", "New TS", {"temperature"}});
     smart_home::SimulatedDiscoverySource full_sds(devices_for_sds, false);
     require(devices_for_sds == full_sds.scan(),
             "Scan should return cached devices");

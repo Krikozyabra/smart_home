@@ -9,6 +9,7 @@
 #include "storage/interfaces/IDeviceStorage.h"
 #include "sqlite3.h"
 
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <vector>
@@ -135,6 +136,18 @@ class SQLiteDeviceStorage final : public IDeviceStorage {
      * @throws std::runtime_error При ошибке SQLite или неожиданном NULL в записи.
      */
     std::vector<DeviceRecord> getAll() const override;
+
+    /**
+     * @brief Атомарно заменяет несколько прежних идентификаторов одним протоколом.
+     * @param previous_ids Старые идентификаторы, по которым выбираются строки.
+     * @param protocol_id Новый идентификатор протокола.
+     * @return Число изменённых строк. Локальные ID сохраняются.
+     * @throws std::runtime_error Ошибка SQLite или совпадение физических идентификаторов.
+     * @throws std::invalid_argument Пустой идентификатор, символ NUL или
+     * превышен лимит числа параметров SQLite.
+     */
+    std::size_t replaceDriverIds(const std::vector<std::string> &previous_ids,
+                                 const std::string &protocol_id);
 };
 
 } // namespace smart_home

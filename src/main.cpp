@@ -5,8 +5,8 @@
 #include "device_management/DeviceManager.h"
 #include "discovery/DiscoveryService.h"
 #include "discovery/SimulatedDiscoverySource.h"
-#include "drivers/SimulatedTemperatureSensorDriver.h"
-#include "drivers/factories/SimulatedLightDriverFactory.h"
+#include "drivers/CapabilityCatalog.h"
+#include "drivers/DeviceCreator.h"
 #include "execution/CommandDispatcher.h"
 #include "logging/Logging.h"
 #include "ontology/LadybugOntologyStorage.h"
@@ -42,6 +42,7 @@
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -234,87 +235,102 @@ class Directory {
     Directory &operator=(const Directory &) = delete;
 };
 
-std::string type(const DeviceRecord &record) {
-    if (record.driver_id == "simulated.light")
-        return "light";
-    if (record.driver_id == "simulated.temperature_sensor")
-        return "temperature_sensor";
-    throw std::runtime_error("Unsupported saved driver type.");
+IDeviceDriver &requireDriver(DeviceRegistry &registry, DeviceId id) {
+    auto *driver = registry.find(id);
+    if (!driver)
+        throw std::runtime_error("Inventory driver missing.");
+    return *driver;
 }
 
-template <class T>
-const T &property(const DevicePropertiesMap::mapped_type &properties,
-                  const char *key) {
-    const auto found = properties.find(key);
-    const auto *value =
-        found == properties.end() ? nullptr : std::get_if<T>(&found->second);
-    if (!value)
-        throw std::runtime_error("Invalid or missing saved device property.");
-    return *value;
+std::string type(const IDeviceDriver &driver) {
+    bool measures_temperature = false;
+    for (const auto &capability : driver.descriptor().getCapabilities()) {
+        const auto &id = capability.getId();
+        if (id == "on_off" || id == "brightness")
+            return "light";
+        measures_temperature |= id == "temperature";
+    }
+    return measures_temperature ? "temperature_sensor" : "device";
 }
 
-void validateProperties(const std::vector<DeviceRecord> &records,
-                        const DevicePropertiesMap &restored) {
-    if (restored.size() != records.size())
-        throw std::runtime_error("Incomplete saved device values.");
-    for (const auto &record : records) {
-        const auto found = restored.find(record.local_id);
-        if (found == restored.end())
-            throw std::runtime_error("Inventory and values disagree.");
-        const auto &values = found->second;
-        if (type(record) == "light") {
-            const auto brightness =
-                property<std::int64_t>(values, "brightness");
-            if (values.size() != 3 || brightness < 0 || brightness > 100)
-                throw std::runtime_error("Invalid saved light value.");
-            property<bool>(values, "on_off");
-            property<Color>(values, "color");
-        } else {
-            if (values.size() != 1)
-                throw std::runtime_error(
-                    "Invalid saved temperature sensor values.");
-            property<double>(values, "temperature");
+Value decodeProperty(const persist::PropertyValue &saved) {
+    return std::visit(
+        [](const auto &value) -> Value {
+            using T = std::decay_t<decltype(value)>;
+            if constexpr (std::is_same_v<T, std::int64_t>) {
+                if (value < std::numeric_limits<int>::min() ||
+                    value > std::numeric_limits<int>::max())
+                    throw std::runtime_error("Saved device integer out of range.");
+                return static_cast<int>(value);
+            } else {
+                return value;
+            }
+        }, saved);
+}
+
+persist::PropertyValue encodeProperty(const Value &property) {
+    return std::visit(
+        [](const auto &value) -> persist::PropertyValue {
+            using T = std::decay_t<decltype(value)>;
+            if constexpr (std::is_same_v<T, int>) {
+                return static_cast<std::int64_t>(value);
+            } else if constexpr (std::is_same_v<T, char>) {
+                throw std::logic_error("Character properties are not supported by persistence.");
+            } else {
+                return value;
+            }
+        }, property);
+}
+
+const CapabilityCatalog::Definition &requireCapability(const std::string &id) {
+    const auto *entry = CapabilityCatalog::find(id);
+    if (!entry)
+        throw std::runtime_error("Unknown runtime capability: " + id);
+    return *entry;
+}
+
+void restoreProperties(SQLiteDeviceStorage &storage, DeviceRegistry &registry,
+                       const DevicePropertiesMap &restored) {
+    for (const auto &record : storage.getAll()) {
+        auto &driver = requireDriver(registry, record.local_id);
+        const auto &capabilities = driver.descriptor().getCapabilities();
+        const auto device_values = restored.find(record.local_id);
+        if (device_values == restored.end() && capabilities.empty())
+            continue;
+        if (device_values == restored.end())
+            throw std::runtime_error("Incomplete saved device values.");
+        const auto &saved = device_values->second;
+        if (saved.size() != capabilities.size())
+            throw std::runtime_error("Saved values disagree with device capabilities.");
+        for (const auto &capability : capabilities) {
+            const auto &capability_id = capability.getId();
+            const auto &entry = requireCapability(capability_id);
+            const auto found = saved.find(capability_id);
+            if (found == saved.end())
+                throw std::runtime_error("Missing saved device property.");
+            const auto value = decodeProperty(found->second);
+            // Earlier snapshots can contain finite temperatures outside the current range.
+            const bool archived_temperature =
+                capability_id == "temperature" && std::holds_alternative<double>(value);
+            if (!archived_temperature && !entry.accepts(value))
+                throw std::runtime_error("Invalid saved device property.");
+            driver.device().setProperty(entry.key(), value);
         }
     }
 }
 
-class TemperatureFactory final : public IDeviceDriverFactory {
-    const DevicePropertiesMap &restored_;
-
-  public:
-    explicit TemperatureFactory(const DevicePropertiesMap &restored)
-        : restored_(restored) {}
-    std::string getDriverId() const override {
-        return "simulated.temperature_sensor";
-    }
-    std::unique_ptr<IDeviceDriver>
-    create(const DeviceRecord &record) const override {
-        const auto found = restored_.find(record.local_id);
-        return std::make_unique<SimulatedTemperatureSensorDriver>(
-            record.local_id, record.physical_id, record.name,
-            found == restored_.end()
-                ? 23.0
-                : property<double>(found->second, "temperature"));
-    }
-};
-
-DevicePropertiesMap capture(SQLiteDeviceStorage &storage,
-                            CommandDispatcher &dispatcher) {
+DevicePropertiesMap capture(SQLiteDeviceStorage &storage, DeviceRegistry &registry) {
     DevicePropertiesMap result;
     for (const auto &record : storage.getAll()) {
-        const auto get = [&](const char *operation) {
-            return dispatcher.execute(Command(record.local_id, operation, {}))
-                .value();
-        };
+        auto &driver = requireDriver(registry, record.local_id);
         auto &values = result[record.local_id];
-        if (type(record) == "light") {
-            values.emplace("on_off", std::get<bool>(get("on_off.get")));
-            values.emplace("brightness",
-                           std::int64_t(std::get<int>(get("brightness.get"))));
-            values.emplace("color", std::get<Color>(get("color.get")));
-        } else
-            values.emplace("temperature",
-                           std::get<double>(get("temperature.get")));
+        for (const auto &capability : driver.descriptor().getCapabilities()) {
+            const auto &id = capability.getId();
+            const auto value = requireCapability(id).read(driver.device());
+            if (!value)
+                throw std::logic_error("Missing runtime device property: " + id);
+            values.emplace(id, encodeProperty(*value));
+        }
     }
     return result;
 }
@@ -332,7 +348,11 @@ bool prepareGraph(Ontology &graph) {
          {ontology::AbilityRecord{"on_off", "Включение", "lighting"},
           ontology::AbilityRecord{"brightness", "Яркость", "lighting"},
           ontology::AbilityRecord{"color", "Цвет", "lighting"},
-          ontology::AbilityRecord{"temperature", "Температура", "climate"}})
+          ontology::AbilityRecord{"temperature", "Температура", "climate"},
+          ontology::AbilityRecord{"humidity", "Влажность", "climate"},
+          ontology::AbilityRecord{"contact", "Контакт", "security"},
+          ontology::AbilityRecord{"battery", "Заряд", "power"},
+          ontology::AbilityRecord{"power", "Мощность", "power"}})
         if (!graph.getAbility(ability.id)) {
             graph.addAbility(ability);
             changed = true;
@@ -340,13 +360,14 @@ bool prepareGraph(Ontology &graph) {
     return changed;
 }
 
-bool assignDefaultRooms(Ontology &graph, SQLiteDeviceStorage &storage) {
+bool assignDefaultRooms(Ontology &graph, SQLiteDeviceStorage &storage,
+                        DeviceRegistry &registry) {
     bool changed = false;
     for (const auto &record : storage.getAll())
         if (!graph.getDeviceRoom(record.local_id)) {
-            graph.assignDeviceToRoom(record.local_id, type(record) == "light"
-                                                          ? "living_room"
-                                                          : "bathroom");
+            const auto category = type(requireDriver(registry, record.local_id));
+            graph.assignDeviceToRoom(record.local_id,
+                                     category == "light" ? "living_room" : "bathroom");
             changed = true;
         }
     return changed;
@@ -424,10 +445,9 @@ std::vector<Value> commandArguments(const std::string &operation,
             rgb[i] = static_cast<std::uint8_t>(component);
         }
         result.emplace_back(Color{rgb[0], rgb[1], rgb[2]});
-    } else if ((operation == "on_off.get" || operation == "brightness.get" ||
-                operation == "color.get" || operation == "temperature.get") &&
-               words.size() == start) {
-    } else
+    } else if (words.size() != start || operation.size() <= 4 ||
+               operation.compare(operation.size() - 4, 4, ".get") != 0 ||
+               !CapabilityCatalog::find(std::string_view(operation).substr(0, operation.size() - 4)))
         throw std::invalid_argument(
             "Unknown operation or wrong argument count.");
     return result;
@@ -451,13 +471,12 @@ int run(const persist::PersistenceConfig &config) {
     persist::DeviceStateStore database(inventory_path);
     const auto restored = saved ? database.loadProperties(saved->revision)
                                 : DevicePropertiesMap{};
-    if (saved)
-        validateProperties(storage.getAll(), restored);
-    else
+    if (!saved)
         database.initializeSchema();
+    const bool migrated = storage.replaceDriverIds(
+        {"simulated.light", "simulated.temperature_sensor"}, "simulated") != 0;
     DriverFactoryRegistry factories;
-    factories.add(std::make_unique<SimulatedLightDriverFactory>());
-    factories.add(std::make_unique<TemperatureFactory>(restored));
+    factories.add("simulated", createSimulatedDriver);
     ontology::OntologyConfig graph_config;
     graph_config.database_path = graph_path;
     graph_config.ram_workspace_base = workspace.path;
@@ -473,26 +492,17 @@ int run(const persist::PersistenceConfig &config) {
     DeviceManager manager(storage, factories, registry, graph);
     manager.restoreStoredDevices();
     CommandDispatcher dispatcher(registry);
-    for (const auto &[id, values] : restored)
-        if (values.count("on_off")) {
-            dispatcher.execute(
-                Command(id, "on_off.set", {property<bool>(values, "on_off")}));
-            dispatcher.execute(Command(id, "brightness.set",
-                                       {static_cast<int>(property<std::int64_t>(
-                                           values, "brightness"))}));
-            dispatcher.execute(
-                Command(id, "color.set", {property<Color>(values, "color")}));
-        }
-    if (saved)
+    if (saved) {
         validateGraph(graph, storage, registry, saved_graph);
-    initialized = assignDefaultRooms(graph, storage) || initialized;
+        restoreProperties(storage, registry, restored);
+    }
+    initialized = assignDefaultRooms(graph, storage, registry) || initialized || migrated;
     std::vector<std::unique_ptr<IDeviceDiscoverySource>> sources;
     sources.push_back(std::make_unique<SimulatedDiscoverySource>(
         std::vector<DiscoveredDevice>{
-            {"SIM-LIGHT-001", "simulated.light", "Light1"},
-            {"SIM-LIGHT-002", "simulated.light", "Light2"},
-            {"SIM-TEMP-001", "simulated.temperature_sensor",
-             "TemperatureSensor in bath"}},
+            {"SIM-LIGHT-001", "simulated", "Light1", {"on_off", "brightness", "color"}},
+            {"SIM-LIGHT-002", "simulated", "Light2", {"on_off", "brightness", "color"}},
+            {"SIM-TEMP-001", "simulated", "TemperatureSensor in bath", {"temperature"}}},
         false));
     DiscoveryService discovery(manager, std::move(sources));
     StdinFlags stdin_flags;
@@ -532,7 +542,7 @@ int run(const persist::PersistenceConfig &config) {
         try {
             validateGraph(graph, storage, registry, snapshotGraph(graph));
             persist::Snapshot snapshot(workspace.path, revision);
-            database.storeProperties(capture(storage, dispatcher), revision);
+            database.storeProperties(capture(storage, registry), revision);
             database.backupTo(snapshot.directory() / "state.sqlite");
             graph.dumpToFile((snapshot.directory() / "ontology.lbdb").string());
             reservation.submit(std::move(snapshot));
@@ -560,13 +570,14 @@ int run(const persist::PersistenceConfig &config) {
         }
         const auto changed_revision = persist::nextRevision(revision);
         bool changed = false;
-        const auto count = storage.getAll().size();
         try {
+            const auto before = snapshotGraph(graph);
+            const auto count = storage.getAll().size();
             const auto report = discovery.scanOnce();
             std::cout << "Scan: " << report.devices_processed << " processed, "
                       << report.errors.size() << " errors\n";
-            changed = storage.getAll().size() != count;
-            changed = assignDefaultRooms(graph, storage) || changed;
+            changed = assignDefaultRooms(graph, storage, registry) ||
+                      storage.getAll().size() != count || snapshotGraph(graph) != before;
         } catch (...) {
             changed = true; // A partial inventory/graph operation must never be
                             // reported as a clean scan.
@@ -585,10 +596,7 @@ int run(const persist::PersistenceConfig &config) {
     // Console categories are a runtime convention; ontology stores no type
     // field.
     const auto consoleType = [&](DeviceId id) {
-        for (const auto &record : storage.getAll())
-            if (record.local_id == id)
-                return type(record);
-        throw std::runtime_error("Graph device is absent from inventory.");
+        return type(requireDriver(registry, id));
     };
     const auto show = [&](DeviceId id) {
         const auto details = graph.getDeviceDetails(id);
@@ -700,7 +708,7 @@ int run(const persist::PersistenceConfig &config) {
                     throw std::runtime_error("Snapshot queue full; change "
                                              "rejected before execution.");
                 changed_revision = persist::nextRevision(revision);
-                before = capture(storage, dispatcher);
+                before = capture(storage, registry);
             }
             std::sort(targets.begin(), targets.end());
             for (const auto id : targets) {
@@ -723,7 +731,7 @@ int run(const persist::PersistenceConfig &config) {
             }
             if (mutating) {
                 try {
-                    if (before == capture(storage, dispatcher))
+                    if (before == capture(storage, registry))
                         return;
                 } catch (...) {
                     // A setter may have succeeded before the comparison failed.
