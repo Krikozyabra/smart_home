@@ -13,6 +13,7 @@
 | Инвентарь устройств | [Описание](storage/spec.md) | `storage` |
 | Регистрация и восстановление устройств | [Описание](device_management/spec.md) | `device_management` |
 | Представление устройств и свойств | [Описание](devices/spec.md) | `devices` |
+| Драйверы и протоколы | [Описание](drivers/spec.md) | `drivers` |
 | Основной цикл программы | [Описание](runtime/) | `runtime` |
 
 ## Формат спецификаций

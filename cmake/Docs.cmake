@@ -34,7 +34,9 @@ endif()
 list(APPEND DOC_INPUTS "${PROJECT_SOURCE_DIR}/specs/audio" "${PROJECT_SOURCE_DIR}/specs/runtime"
                       "${PROJECT_SOURCE_DIR}/specs/ontology"
                       "${PROJECT_SOURCE_DIR}/specs/storage"
-                      "${PROJECT_SOURCE_DIR}/specs/device_management")
+                      "${PROJECT_SOURCE_DIR}/specs/device_management"
+                      "${PROJECT_SOURCE_DIR}/specs/devices"
+                      "${PROJECT_SOURCE_DIR}/specs/drivers")
 
 doxygen_add_docs(docs ${DOC_INPUTS}
     COMMENT "Генерация API-документации с помощью Doxygen"
