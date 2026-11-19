@@ -10,17 +10,21 @@
 #include "execution/CommandDispatcher.h"
 #include "logging/Logging.h"
 #include "ontology/LadybugOntologyStorage.h"
+#include "persistence/DeviceStateStore.h"
+#include "persistence/GenerationManager.h"
+#include "persistence/PersistenceConfig.h"
+#include "persistence/SaveWorker.h"
+#include "persistence/StateLock.h"
 #include "registry/DriverFactoryRegistry.h"
 #include "storage/SQLiteDeviceStorage.h"
 
+#if defined(SMART_HOME_RUNTIME_TESTING) && SMART_HOME_RUNTIME_TESTING == 1
+#include "Testing.h"
+#endif
+
 #include <fcntl.h>
-#include <linux/magic.h>
-#include <openssl/evp.h>
 #include <poll.h>
 #include <signal.h>
-#include <sqlite3.h>
-#include <sys/file.h>
-#include <sys/statfs.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -28,30 +32,28 @@
 #include <atomic>
 #include <cerrno>
 #include <charconv>
-#include <cmath>
-#include <condition_variable>
 #include <cstdlib>
 #include <cstring>
-#include <deque>
 #include <filesystem>
-#include <fstream>
-#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <map>
-#include <mutex>
+#include <memory>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
-#include <thread>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace {
 using namespace smart_home;
 namespace fs = std::filesystem;
 namespace log = smart_home::logging;
+namespace persist = smart_home::persistence;
 using Ontology = ontology::LadybugOntologyStorage;
-using Revision = std::int64_t;
+using persist::DevicePropertiesMap;
+using persist::Revision;
 
 [[noreturn]] void systemError(const char *operation) {
     throw std::runtime_error(std::string(operation) + ": " +
@@ -72,7 +74,7 @@ class Fd {
     int get() const { return value_; }
 };
 
-class EventPipe {
+class SignalPipe {
     Fd reader_, writer_;
     static std::array<int, 2> openPipe() {
         std::array<int, 2> fds{};
@@ -80,18 +82,13 @@ class EventPipe {
             systemError("pipe2");
         return fds;
     }
-    explicit EventPipe(std::array<int, 2> fds)
+    explicit SignalPipe(std::array<int, 2> fds)
         : reader_(fds[0]), writer_(fds[1]) {}
 
   public:
-    EventPipe() : EventPipe(openPipe()) {}
+    SignalPipe() : SignalPipe(openPipe()) {}
     int reader() const { return reader_.get(); }
     int writer() const { return writer_.get(); }
-    void notify() const noexcept {
-        const char byte = 1;
-        while (::write(writer(), &byte, 1) < 0 && errno == EINTR) {
-        }
-    }
     void drain() const {
         char bytes[128];
         while (::read(reader(), bytes, sizeof(bytes)) > 0) {
@@ -120,7 +117,7 @@ class Signals {
     struct sigaction old_int_{}, old_term_{};
 
   public:
-    explicit Signals(const EventPipe &pipe) {
+    explicit Signals(const SignalPipe &pipe) {
         stop_requested = 0;
         signal_writer = pipe.writer();
         struct sigaction action{};
@@ -164,19 +161,14 @@ template <class T> T integer(const std::string &text) {
     return result;
 }
 
-struct Config {
-    fs::path state = "data/runtime";
-    fs::path ram = "/dev/shm";
-    std::size_t capacity = 4;
-};
-
-Config arguments(int argc, char *argv[],
-                 std::vector<const char *> &logging_arguments) {
-    Config config;
+persist::PersistenceConfig
+arguments(int argc, char *argv[],
+          std::vector<const char *> &logging_arguments) {
+    persist::PersistenceConfig config;
     if (const char *value = std::getenv("SMART_HOME_RUNTIME_STATE_DIR"))
-        config.state = value;
+        config.state_dir = value;
     if (const char *value = std::getenv("SMART_HOME_RUNTIME_RAM_DIR"))
-        config.ram = value;
+        config.ram_dir = value;
     if (const char *value = std::getenv("SMART_HOME_RUNTIME_SNAPSHOT_CAPACITY"))
         config.capacity = integer<std::size_t>(value);
     // The standalone ontology destination/worker must never bypass CURRENT.
@@ -211,15 +203,13 @@ Config arguments(int argc, char *argv[],
             value = argv[i];
         }
         if (name == "--runtime-state-dir")
-            config.state = value;
+            config.state_dir = value;
         if (name == "--runtime-ram-dir")
-            config.ram = value;
+            config.ram_dir = value;
         if (name == "--runtime-snapshot-capacity")
             config.capacity = integer<std::size_t>(value);
     }
-    if (config.state.empty() || config.ram.empty() || config.capacity == 0)
-        throw std::invalid_argument(
-            "Runtime paths and snapshot capacity must be nonempty/positive.");
+    persist::validateConfig(config);
     return config;
 }
 
@@ -244,207 +234,6 @@ class Directory {
     Directory &operator=(const Directory &) = delete;
 };
 
-void syncPath(const fs::path &path, bool directory = false);
-
-void createStateDirectories(const fs::path &path) {
-    std::vector<fs::path> missing;
-    for (auto next = fs::absolute(path); !fs::exists(next);
-         next = next.parent_path())
-        missing.push_back(next);
-    fs::create_directories(path);
-    for (auto it = missing.rbegin(); it != missing.rend(); ++it) {
-        syncPath(*it, true);
-        syncPath(it->parent_path(), true);
-    }
-}
-
-class StateLock {
-    Fd fd_;
-    static int acquire(const fs::path &state) {
-        createStateDirectories(state / "generations");
-        if (!fs::is_directory(fs::symlink_status(state / "generations")))
-            throw std::runtime_error(
-                "Generation directory must not be a symlink.");
-        Fd fd(::open((state / "runtime.lock").c_str(),
-                     O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600));
-        if (fd.get() < 0)
-            systemError("open runtime lock");
-        if (::flock(fd.get(), LOCK_EX | LOCK_NB) != 0)
-            throw std::runtime_error(
-                "Runtime state is locked by another process.");
-        int result = ::fcntl(fd.get(), F_DUPFD_CLOEXEC, 0);
-        if (result < 0)
-            systemError("dup runtime lock");
-        return result;
-    }
-
-  public:
-    explicit StateLock(const fs::path &state) : fd_(acquire(state)) {}
-};
-
-void requireRam(const fs::path &path) {
-    struct statfs info{};
-    if (::statfs(path.c_str(), &info) != 0)
-        systemError("statfs RAM directory");
-    if (info.f_type != TMPFS_MAGIC && info.f_type != RAMFS_MAGIC)
-        throw std::runtime_error("Runtime workspace must be on tmpfs/ramfs; "
-                                 "disk fallback is disabled.");
-}
-
-void syncPath(const fs::path &path, bool directory) {
-    Fd fd(::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW |
-                                   (directory ? O_DIRECTORY : 0)));
-    if (fd.get() < 0)
-        systemError("open for fsync");
-    while (::fsync(fd.get()) != 0) {
-        if (errno != EINTR)
-            systemError("fsync");
-    }
-}
-
-void writeFile(const fs::path &path, const std::string &content) {
-    std::ofstream file(path, std::ios::binary | std::ios::trunc);
-    file.exceptions(std::ios::failbit | std::ios::badbit);
-    file << content;
-    file.close();
-}
-
-std::string readFile(const fs::path &path) {
-    if (!fs::is_regular_file(fs::symlink_status(path)) ||
-        fs::file_size(path) > 4096)
-        throw std::runtime_error("Invalid runtime manifest file.");
-    std::ifstream file(path, std::ios::binary);
-    file.exceptions(std::ios::badbit);
-    if (!file)
-        throw std::runtime_error("Cannot read runtime manifest.");
-    return {std::istreambuf_iterator<char>(file),
-            std::istreambuf_iterator<char>()};
-}
-
-std::string digest(const fs::path &path) {
-    if (!fs::is_regular_file(fs::symlink_status(path)))
-        throw std::runtime_error("Missing generation file.");
-    std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(
-        EVP_MD_CTX_new(), EVP_MD_CTX_free);
-    if (!ctx || EVP_DigestInit_ex(ctx.get(), EVP_sha256(), nullptr) != 1)
-        throw std::runtime_error("SHA256 initialization failed.");
-    std::ifstream file(path, std::ios::binary);
-    if (!file)
-        throw std::runtime_error("Cannot read generation file.");
-    std::array<char, 65536> buffer;
-    while (file) {
-        file.read(buffer.data(), buffer.size());
-        if (EVP_DigestUpdate(ctx.get(), buffer.data(),
-                             static_cast<std::size_t>(file.gcount())) != 1)
-            throw std::runtime_error("SHA256 update failed.");
-    }
-    if (!file.eof())
-        throw std::runtime_error("Generation read failed.");
-    unsigned char bytes[EVP_MAX_MD_SIZE];
-    unsigned length = 0;
-    if (EVP_DigestFinal_ex(ctx.get(), bytes, &length) != 1)
-        throw std::runtime_error("SHA256 finalization failed.");
-    std::ostringstream result;
-    for (unsigned i = 0; i < length; ++i)
-        result << std::hex << std::setfill('0') << std::setw(2)
-               << static_cast<unsigned>(bytes[i]);
-    return result.str();
-}
-
-std::string metadata(const fs::path &directory, Revision revision) {
-    return "SMART_HOME_RUNTIME 1\n" + std::to_string(revision) + "\n" +
-           digest(directory / "state.sqlite") + "\n" +
-           digest(directory / "ontology.lbdb") + "\n";
-}
-
-struct Committed {
-    fs::path path;
-    Revision revision = 0;
-};
-Committed committed(const fs::path &state) {
-    if (!fs::exists(fs::symlink_status(state / "CURRENT")))
-        return {};
-    auto current = readFile(state / "CURRENT");
-    if (current.empty() || current.back() != '\n')
-        throw std::runtime_error("Invalid CURRENT.");
-    current.pop_back();
-    if (current.rfind("gen-", 0) != 0 || current.size() > 100 ||
-        current.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQR"
-                                  "STUVWXYZ0123456789-") != std::string::npos)
-        throw std::runtime_error("Invalid CURRENT generation name.");
-    const fs::path path = state / "generations" / current;
-    if (!fs::is_directory(fs::symlink_status(path)))
-        throw std::runtime_error("Missing committed generation.");
-    const auto text = readFile(path / "metadata");
-    std::istringstream input(text);
-    std::string magic, version, revision;
-    if (!(input >> magic >> version >> revision) ||
-        magic != "SMART_HOME_RUNTIME" || version != "1")
-        throw std::runtime_error("Unsupported runtime metadata.");
-    const Revision rev = integer<Revision>(revision);
-    if (rev < 0 || text != metadata(path, rev))
-        throw std::runtime_error("Corrupt or mixed runtime generation.");
-    return {path, rev};
-}
-
-class Database {
-    struct Close {
-        void operator()(sqlite3 *db) const { sqlite3_close_v2(db); }
-    };
-    std::unique_ptr<sqlite3, Close> db_;
-
-  public:
-    explicit Database(const fs::path &path) {
-        sqlite3 *raw = nullptr;
-        const int rc = sqlite3_open_v2(
-            path.c_str(), &raw, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
-            nullptr);
-        db_.reset(raw);
-        if (rc != SQLITE_OK)
-            throw std::runtime_error("Cannot open runtime SQLite database.");
-    }
-    sqlite3 *get() const { return db_.get(); }
-    void exec(const char *sql) {
-        if (sqlite3_exec(get(), sql, nullptr, nullptr, nullptr) != SQLITE_OK)
-            throw std::runtime_error("Runtime SQLite operation failed.");
-    }
-    using Statement =
-        std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)>;
-    Statement prepare(const char *sql) {
-        sqlite3_stmt *raw = nullptr;
-        const int rc = sqlite3_prepare_v2(get(), sql, -1, &raw, nullptr);
-        Statement statement(raw, sqlite3_finalize);
-        if (rc != SQLITE_OK)
-            throw std::runtime_error("Invalid runtime SQLite schema.");
-        return statement;
-    }
-    void backup(const fs::path &path) {
-        Database destination(path);
-        sqlite3_backup *backup =
-            sqlite3_backup_init(destination.get(), "main", get(), "main");
-        if (!backup)
-            throw std::runtime_error("SQLite backup initialization failed.");
-        const int step = sqlite3_backup_step(backup, -1);
-        const int finish = sqlite3_backup_finish(backup);
-        if (step != SQLITE_DONE || finish != SQLITE_OK)
-            throw std::runtime_error("SQLite backup failed.");
-    }
-};
-
-struct Values {
-    bool light = false;
-    bool on = false;
-    int brightness = 0;
-    Color color{0, 0, 0};
-    double temperature = 0;
-    bool operator==(const Values &other) const {
-        return light == other.light && on == other.on &&
-               brightness == other.brightness && color == other.color &&
-               temperature == other.temperature;
-    }
-};
-using States = std::map<DeviceId, Values>;
-
 std::string type(const DeviceRecord &record) {
     if (record.driver_id == "simulated.light")
         return "light";
@@ -453,94 +242,48 @@ std::string type(const DeviceRecord &record) {
     throw std::runtime_error("Unsupported saved driver type.");
 }
 
-States loadValues(Database &db, const std::vector<DeviceRecord> &records,
-                  Revision revision, bool existing) {
-    if (!existing) {
-        db.exec("CREATE TABLE runtime_meta(version INTEGER NOT NULL, revision "
-                "INTEGER NOT NULL);"
-                "INSERT INTO runtime_meta VALUES(1,0);"
-                "CREATE TABLE runtime_values(id INTEGER PRIMARY KEY, type TEXT "
-                "NOT NULL,"
-                "on_value INTEGER, brightness INTEGER, red INTEGER, green "
-                "INTEGER, blue INTEGER, temperature REAL);");
-        return {};
-    }
-    auto check = db.prepare("PRAGMA integrity_check");
-    if (sqlite3_step(check.get()) != SQLITE_ROW ||
-        std::string(reinterpret_cast<const char *>(
-            sqlite3_column_text(check.get(), 0))) != "ok")
-        throw std::runtime_error("Corrupt SQLite inventory.");
-    auto meta = db.prepare("SELECT version,revision FROM runtime_meta");
-    if (sqlite3_step(meta.get()) != SQLITE_ROW ||
-        sqlite3_column_type(meta.get(), 0) != SQLITE_INTEGER ||
-        sqlite3_column_int(meta.get(), 0) != 1 ||
-        sqlite3_column_type(meta.get(), 1) != SQLITE_INTEGER ||
-        sqlite3_column_int64(meta.get(), 1) != revision ||
-        sqlite3_step(meta.get()) != SQLITE_DONE)
-        throw std::runtime_error("Mismatched runtime SQLite revision/version.");
-    States values;
-    auto statement = db.prepare(
-        "SELECT id,type,on_value,brightness,red,green,blue,temperature FROM "
-        "runtime_values ORDER BY id");
-    int rc;
-    while ((rc = sqlite3_step(statement.get())) == SQLITE_ROW) {
-        auto *row = statement.get();
-        if (sqlite3_column_type(row, 0) != SQLITE_INTEGER ||
-            sqlite3_column_int64(row, 0) < 0 ||
-            sqlite3_column_type(row, 1) != SQLITE_TEXT)
-            throw std::runtime_error("Invalid saved device identity.");
-        const auto id = sqlite3_column_int64(row, 0);
-        const std::string saved_type(
-            reinterpret_cast<const char *>(sqlite3_column_text(row, 1)));
-        Values value;
-        if (saved_type == "light") {
-            value.light = true;
-            for (int column = 2; column <= 6; ++column) {
-                const auto number = sqlite3_column_int64(row, column);
-                const int maximum = column == 2 ? 1 : column == 3 ? 100 : 255;
-                if (sqlite3_column_type(row, column) != SQLITE_INTEGER ||
-                    number < 0 || number > maximum)
-                    throw std::runtime_error("Invalid saved light value.");
-            }
-            if (sqlite3_column_type(row, 7) != SQLITE_NULL)
-                throw std::runtime_error("Unexpected light temperature.");
-            value.on = sqlite3_column_int(row, 2) != 0;
-            value.brightness = sqlite3_column_int(row, 3);
-            value.color =
-                Color{static_cast<std::uint8_t>(sqlite3_column_int(row, 4)),
-                      static_cast<std::uint8_t>(sqlite3_column_int(row, 5)),
-                      static_cast<std::uint8_t>(sqlite3_column_int(row, 6))};
-        } else if (saved_type == "temperature_sensor") {
-            for (int column = 2; column <= 6; ++column)
-                if (sqlite3_column_type(row, column) != SQLITE_NULL)
-                    throw std::runtime_error("Unexpected sensor light value.");
-            const int storage_type = sqlite3_column_type(row, 7);
-            value.temperature = sqlite3_column_double(row, 7);
-            if ((storage_type != SQLITE_FLOAT &&
-                 storage_type != SQLITE_INTEGER) ||
-                !std::isfinite(value.temperature))
-                throw std::runtime_error("Invalid saved temperature.");
-        } else
-            throw std::runtime_error("Unsupported saved device type.");
-        if (!values.emplace(id, value).second)
-            throw std::runtime_error("Duplicate saved device values.");
-    }
-    if (rc != SQLITE_DONE || values.size() != records.size())
+template <class T>
+const T &property(const DevicePropertiesMap::mapped_type &properties,
+                  const char *key) {
+    const auto found = properties.find(key);
+    const auto *value =
+        found == properties.end() ? nullptr : std::get_if<T>(&found->second);
+    if (!value)
+        throw std::runtime_error("Invalid or missing saved device property.");
+    return *value;
+}
+
+void validateProperties(const std::vector<DeviceRecord> &records,
+                        const DevicePropertiesMap &restored) {
+    if (restored.size() != records.size())
         throw std::runtime_error("Incomplete saved device values.");
     for (const auto &record : records) {
-        auto found = values.find(record.local_id);
-        if (found == values.end() ||
-            found->second.light != (type(record) == "light"))
+        const auto found = restored.find(record.local_id);
+        if (found == restored.end())
             throw std::runtime_error("Inventory and values disagree.");
+        const auto &values = found->second;
+        if (type(record) == "light") {
+            const auto brightness =
+                property<std::int64_t>(values, "brightness");
+            if (values.size() != 3 || brightness < 0 || brightness > 100)
+                throw std::runtime_error("Invalid saved light value.");
+            property<bool>(values, "on_off");
+            property<Color>(values, "color");
+        } else {
+            if (values.size() != 1)
+                throw std::runtime_error(
+                    "Invalid saved temperature sensor values.");
+            property<double>(values, "temperature");
+        }
     }
-    return values;
 }
 
 class TemperatureFactory final : public IDeviceDriverFactory {
-    const States &restored_;
+    const DevicePropertiesMap &restored_;
 
   public:
-    explicit TemperatureFactory(const States &restored) : restored_(restored) {}
+    explicit TemperatureFactory(const DevicePropertiesMap &restored)
+        : restored_(restored) {}
     std::string getDriverId() const override {
         return "simulated.temperature_sensor";
     }
@@ -549,68 +292,31 @@ class TemperatureFactory final : public IDeviceDriverFactory {
         const auto found = restored_.find(record.local_id);
         return std::make_unique<SimulatedTemperatureSensorDriver>(
             record.local_id, record.physical_id, record.name,
-            found == restored_.end() ? 23.0 : found->second.temperature);
+            found == restored_.end()
+                ? 23.0
+                : property<double>(found->second, "temperature"));
     }
 };
 
-States capture(SQLiteDeviceStorage &storage, CommandDispatcher &dispatcher) {
-    States result;
+DevicePropertiesMap capture(SQLiteDeviceStorage &storage,
+                            CommandDispatcher &dispatcher) {
+    DevicePropertiesMap result;
     for (const auto &record : storage.getAll()) {
         const auto get = [&](const char *operation) {
             return dispatcher.execute(Command(record.local_id, operation, {}))
                 .value();
         };
-        Values value;
-        value.light = type(record) == "light";
-        if (value.light) {
-            value.on = std::get<bool>(get("on_off.get"));
-            value.brightness = std::get<int>(get("brightness.get"));
-            value.color = std::get<Color>(get("color.get"));
+        auto &values = result[record.local_id];
+        if (type(record) == "light") {
+            values.emplace("on_off", std::get<bool>(get("on_off.get")));
+            values.emplace("brightness",
+                           std::int64_t(std::get<int>(get("brightness.get"))));
+            values.emplace("color", std::get<Color>(get("color.get")));
         } else
-            value.temperature = std::get<double>(get("temperature.get"));
-        result.emplace(record.local_id, value);
+            values.emplace("temperature",
+                           std::get<double>(get("temperature.get")));
     }
     return result;
-}
-
-void storeValues(Database &db, const States &values, Revision revision) {
-    db.exec("BEGIN IMMEDIATE");
-    try {
-        db.exec("DELETE FROM runtime_values");
-        auto statement =
-            db.prepare("INSERT INTO runtime_values VALUES(?,?,?,?,?,?,?,?)");
-        for (const auto &[id, value] : values) {
-            sqlite3_reset(statement.get());
-            sqlite3_clear_bindings(statement.get());
-            auto bind = [](int rc) {
-                if (rc != SQLITE_OK)
-                    throw std::runtime_error("SQLite binding failed.");
-            };
-            bind(sqlite3_bind_int64(statement.get(), 1, id));
-            bind(sqlite3_bind_text(statement.get(), 2,
-                                   value.light ? "light" : "temperature_sensor",
-                                   -1, SQLITE_STATIC));
-            if (value.light) {
-                bind(sqlite3_bind_int(statement.get(), 3, value.on));
-                bind(sqlite3_bind_int(statement.get(), 4, value.brightness));
-                bind(sqlite3_bind_int(statement.get(), 5, value.color.red));
-                bind(sqlite3_bind_int(statement.get(), 6, value.color.green));
-                bind(sqlite3_bind_int(statement.get(), 7, value.color.blue));
-            } else
-                bind(
-                    sqlite3_bind_double(statement.get(), 8, value.temperature));
-            if (sqlite3_step(statement.get()) != SQLITE_DONE)
-                throw std::runtime_error("Cannot store runtime values.");
-        }
-        auto meta = db.prepare("UPDATE runtime_meta SET revision=?");
-        if (sqlite3_bind_int64(meta.get(), 1, revision) != SQLITE_OK ||
-            sqlite3_step(meta.get()) != SQLITE_DONE)
-            throw std::runtime_error("Cannot store runtime revision.");
-        db.exec("COMMIT");
-    } catch (...) {
-        db.exec("ROLLBACK");
-        throw;
-    }
 }
 
 bool prepareGraph(Ontology &graph) {
@@ -681,182 +387,6 @@ void validateGraph(Ontology &graph, SQLiteDeviceStorage &storage,
     }
 }
 
-// Only the test executable contains fault injection; production ignores this
-// environment.
-void testPoint(const char *point, Revision revision) {
-#ifdef SMART_HOME_RUNTIME_TESTING
-    const char *base = std::getenv("SMART_HOME_RUNTIME_TEST_CONTROL");
-    if (!base)
-        return;
-    const fs::path control(base);
-    const std::string key = std::string(point) + "-" + std::to_string(revision);
-    writeFile(control / (key + ".reached"), "ready\n");
-    // A FIFO gives tests an explicit worker gate without timing assumptions.
-    const fs::path gate = control / (key + ".gate");
-    if (fs::exists(gate)) {
-        Fd fd(::open(gate.c_str(), O_RDONLY | O_CLOEXEC));
-        if (fd.get() < 0)
-            systemError("test gate");
-        char byte;
-        while (::read(fd.get(), &byte, 1) < 0 && errno == EINTR) {
-        }
-    }
-    if (fs::exists(control / (key + ".fail")))
-        throw std::runtime_error("Injected runtime persistence failure.");
-#else
-    (void)point;
-    (void)revision;
-#endif
-}
-
-struct Snapshot {
-    std::unique_ptr<Directory> directory;
-    Revision revision;
-};
-struct SaveResult {
-    Revision revision;
-    bool success;
-};
-
-void publish(const fs::path &state, const Snapshot &snapshot) {
-    const auto &source = snapshot.directory->path;
-    const Revision revision = snapshot.revision;
-    Directory temporary(state / "generations", ".pending-");
-    testPoint("before-files", revision);
-    for (const char *name : {"state.sqlite", "ontology.lbdb", "metadata"}) {
-        fs::copy_file(source / name, temporary.path / name);
-        syncPath(temporary.path / name);
-        testPoint(name, revision);
-    }
-    syncPath(temporary.path, true);
-    const auto name = "gen-" + std::to_string(revision) + "-" +
-                      temporary.path.filename().string().substr(9);
-    const auto generation = state / "generations" / name;
-    fs::rename(temporary.path, generation);
-    syncPath(state / "generations", true);
-    testPoint("generation", revision);
-    // Keep both old and new generations until CURRENT is durable.
-    const auto current_tmp = state / "CURRENT.tmp";
-    writeFile(current_tmp, name + "\n");
-    syncPath(current_tmp);
-    testPoint("before-current", revision);
-    fs::rename(current_tmp, state / "CURRENT");
-    testPoint("after-current", revision);
-    syncPath(state, true);
-    testPoint("committed", revision);
-    // A failure in optional garbage collection must not revoke a durable
-    // commit.
-    try {
-        std::error_code ignored;
-        for (const auto &entry :
-             fs::directory_iterator(state / "generations", ignored))
-            if (entry.path() != generation)
-                fs::remove_all(entry.path(), ignored);
-    } catch (...) { /* Optional cleanup cannot revoke a durable commit. */
-    }
-}
-
-class SaveWorker {
-    fs::path state_;
-    std::size_t capacity_, occupied_ = 0;
-    std::mutex mutex_;
-    std::condition_variable cv_;
-    std::deque<Snapshot> queue_;
-    std::vector<SaveResult> results_;
-    bool stopping_ = false;
-    EventPipe events_;
-    std::thread thread_;
-    void work() noexcept {
-        for (;;) {
-            Snapshot snapshot;
-            {
-                std::unique_lock<std::mutex> lock(mutex_);
-                cv_.wait(lock, [&] { return stopping_ || !queue_.empty(); });
-                if (queue_.empty())
-                    return;
-                snapshot = std::move(queue_.front());
-                queue_.pop_front();
-            }
-            bool success = false;
-            try {
-                publish(state_, snapshot);
-                success = true;
-            } catch (...) {
-                // Live RAM databases remain available for retry; failed queued
-                // copies are bounded.
-            }
-            snapshot.directory.reset();
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                results_.push_back({snapshot.revision, success});
-            }
-            events_.notify();
-        }
-    }
-
-  public:
-    SaveWorker(const fs::path &state, std::size_t capacity)
-        : state_(state), capacity_(capacity), thread_() {
-        results_.reserve(capacity_);
-        thread_ = std::thread([this] { work(); });
-    }
-    ~SaveWorker() { stop(); }
-    void stop() {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            stopping_ = true;
-        }
-        cv_.notify_one();
-        if (thread_.joinable())
-            thread_.join();
-    }
-    bool reserve() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (occupied_ == capacity_)
-            return false;
-        ++occupied_;
-        return true;
-    }
-    void release() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        --occupied_;
-    }
-    void submit(Snapshot snapshot) {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            queue_.push_back(std::move(snapshot));
-        }
-        cv_.notify_one();
-    }
-    std::vector<SaveResult> collect() {
-        events_.drain();
-        std::lock_guard<std::mutex> lock(mutex_);
-        auto results = results_;
-        results_.clear();
-        occupied_ -= results.size();
-        return results;
-    }
-    int eventFd() const { return events_.reader(); }
-};
-
-class Reservation {
-    SaveWorker &worker_;
-    bool owned_;
-
-  public:
-    explicit Reservation(SaveWorker &worker)
-        : worker_(worker), owned_(worker.reserve()) {}
-    ~Reservation() {
-        if (owned_)
-            worker_.release();
-    }
-    explicit operator bool() const { return owned_; }
-    void submit(Snapshot snapshot) {
-        worker_.submit(std::move(snapshot));
-        owned_ = false;
-    }
-};
-
 std::string display(const Value &value) {
     return std::visit(
         [](const auto &item) {
@@ -903,23 +433,28 @@ std::vector<Value> commandArguments(const std::string &operation,
     return result;
 }
 
-int run(const Config &config) {
-    EventPipe signal_events;
+int run(const persist::PersistenceConfig &config) {
+    SignalPipe signal_events;
     Signals signals(signal_events);
-    StateLock state_lock(config.state);
-    const Committed saved = committed(config.state);
-    requireRam(config.ram);
-    Directory workspace(config.ram, "smart-home-runtime-");
+    persist::StateLock state_lock(config.state_dir);
+    const auto saved =
+        persist::GenerationManager(state_lock).resolveCommitted();
+    persist::requireRamDirectory(config.ram_dir);
+    Directory workspace(config.ram_dir, "smart-home-runtime-");
     const auto inventory_path = workspace.path / "state.sqlite";
     const auto graph_path = workspace.path / "ontology.lbdb";
-    if (!saved.path.empty()) {
-        fs::copy_file(saved.path / "state.sqlite", inventory_path);
-        fs::copy_file(saved.path / "ontology.lbdb", graph_path);
+    if (saved) {
+        fs::copy_file(saved->path / "state.sqlite", inventory_path);
+        fs::copy_file(saved->path / "ontology.lbdb", graph_path);
     }
     SQLiteDeviceStorage storage(inventory_path.string());
-    Database database(inventory_path);
-    const States restored = loadValues(database, storage.getAll(),
-                                       saved.revision, !saved.path.empty());
+    persist::DeviceStateStore database(inventory_path);
+    const auto restored = saved ? database.loadProperties(saved->revision)
+                                : DevicePropertiesMap{};
+    if (saved)
+        validateProperties(storage.getAll(), restored);
+    else
+        database.initializeSchema();
     DriverFactoryRegistry factories;
     factories.add(std::make_unique<SimulatedLightDriverFactory>());
     factories.add(std::make_unique<TemperatureFactory>(restored));
@@ -928,9 +463,10 @@ int run(const Config &config) {
     graph_config.ram_workspace_base = workspace.path;
     graph_config.allow_disk_fallback = false;
     Ontology graph(graph_config);
-    // Preserve committed graph contents for validation before accepting startup.
+    // Preserve committed graph contents for validation before accepting
+    // startup.
     GraphSnapshot saved_graph;
-    if (!saved.path.empty())
+    if (saved)
         saved_graph = snapshotGraph(graph);
     bool initialized = prepareGraph(graph);
     DeviceRegistry registry;
@@ -938,13 +474,16 @@ int run(const Config &config) {
     manager.restoreStoredDevices();
     CommandDispatcher dispatcher(registry);
     for (const auto &[id, values] : restored)
-        if (values.light) {
-            dispatcher.execute(Command(id, "on_off.set", {values.on}));
+        if (values.count("on_off")) {
             dispatcher.execute(
-                Command(id, "brightness.set", {values.brightness}));
-            dispatcher.execute(Command(id, "color.set", {values.color}));
+                Command(id, "on_off.set", {property<bool>(values, "on_off")}));
+            dispatcher.execute(Command(id, "brightness.set",
+                                       {static_cast<int>(property<std::int64_t>(
+                                           values, "brightness"))}));
+            dispatcher.execute(
+                Command(id, "color.set", {property<Color>(values, "color")}));
         }
-    if (!saved.path.empty())
+    if (saved)
         validateGraph(graph, storage, registry, saved_graph);
     initialized = assignDefaultRooms(graph, storage) || initialized;
     std::vector<std::unique_ptr<IDeviceDiscoverySource>> sources;
@@ -957,23 +496,22 @@ int run(const Config &config) {
         false));
     DiscoveryService discovery(manager, std::move(sources));
     StdinFlags stdin_flags;
-    SaveWorker worker(config.state, config.capacity);
+    persist::SaveWorker worker(state_lock, config.capacity);
     // All startup resources are ready. Keep live RAM state if runtime
     // completion fails.
     workspace.preserve = true;
-    Revision revision = saved.revision, confirmed = saved.revision;
+    Revision revision = saved ? saved->revision : 0;
+    Revision confirmed = revision;
     bool unsaved = initialized;
     bool last_save_success = true;
-    const auto advance = [&] {
-        if (revision == std::numeric_limits<Revision>::max())
-            throw std::runtime_error("Runtime revision overflow.");
-        ++revision;
+    const auto markChanged = [&](Revision changed_revision) {
+        revision = changed_revision;
         unsaved = true;
     };
     if (initialized)
-        advance();
+        markChanged(persist::nextRevision(revision));
     const auto collect = [&] {
-        for (const auto &result : worker.collect()) {
+        for (const auto &result : worker.collectResults()) {
             last_save_success = result.success;
             if (result.success) {
                 confirmed = std::max(confirmed, result.revision);
@@ -981,6 +519,8 @@ int run(const Config &config) {
                     unsaved = false;
                 std::cout << "Saved revision " << result.revision << '\n';
             } else {
+                if (result.revision == revision)
+                    unsaved = true;
                 std::cout << "Save failed for revision " << result.revision
                           << "; changes remain in RAM. Use save to retry.\n";
                 log::log(log::Level::Error, "Runtime",
@@ -988,18 +528,14 @@ int run(const Config &config) {
             }
         }
     };
-    const auto prepare = [&](Reservation &reservation) {
+    const auto prepare = [&](persist::Reservation &reservation) {
         try {
             validateGraph(graph, storage, registry, snapshotGraph(graph));
-            testPoint("prepare", revision);
-            auto directory =
-                std::make_unique<Directory>(workspace.path, "snapshot-");
-            storeValues(database, capture(storage, dispatcher), revision);
-            database.backup(directory->path / "state.sqlite");
-            graph.dumpToFile((directory->path / "ontology.lbdb").string());
-            writeFile(directory->path / "metadata",
-                      metadata(directory->path, revision));
-            reservation.submit({std::move(directory), revision});
+            persist::Snapshot snapshot(workspace.path, revision);
+            database.storeProperties(capture(storage, dispatcher), revision);
+            database.backupTo(snapshot.directory() / "state.sqlite");
+            graph.dumpToFile((snapshot.directory() / "ontology.lbdb").string());
+            reservation.submit(std::move(snapshot));
             std::cout << "Save queued revision " << revision << '\n';
             return true;
         } catch (...) {
@@ -1012,12 +548,17 @@ int run(const Config &config) {
         }
     };
     const auto scan = [&] {
-        Reservation reservation(worker);
+        auto reservation = worker.reserve();
         if (!reservation) {
             std::cout << "Error: snapshot queue full; scan rejected before "
                          "execution.\n";
             return;
         }
+        if (revision == std::numeric_limits<Revision>::max()) {
+            std::cout << "Error: Runtime revision overflow.\n";
+            return;
+        }
+        const auto changed_revision = persist::nextRevision(revision);
         bool changed = false;
         const auto count = storage.getAll().size();
         try {
@@ -1035,13 +576,14 @@ int run(const Config &config) {
                      "Discovery/graph operation incomplete.");
         }
         if (changed)
-            advance();
+            markChanged(changed_revision);
         if (changed || initialized) {
             initialized = false;
             prepare(reservation);
         }
     };
-    // Console categories are a runtime convention; ontology stores no type field.
+    // Console categories are a runtime convention; ontology stores no type
+    // field.
     const auto consoleType = [&](DeviceId id) {
         for (const auto &record : storage.getAll())
             if (record.local_id == id)
@@ -1053,8 +595,7 @@ int run(const Config &config) {
         if (!details)
             throw std::invalid_argument("Unknown device ID.");
         std::cout << "Device " << id << " " << details->device.name << " "
-                  << consoleType(id) << " room=" << details->room_id
-                  << '\n';
+                  << consoleType(id) << " room=" << details->room_id << '\n';
         for (const auto &ability : details->ability_ids) {
             const auto value =
                 dispatcher.execute(Command(id, ability + ".get", {}));
@@ -1108,7 +649,7 @@ int run(const Config &config) {
                 return;
             }
             if (words[0] == "save" && words.size() == 1) {
-                Reservation reservation(worker);
+                auto reservation = worker.reserve();
                 if (!reservation)
                     throw std::runtime_error(
                         "Snapshot queue full; save was not queued.");
@@ -1150,20 +691,24 @@ int run(const Config &config) {
                 operation.substr(operation.size() - 4) == ".set";
             // Even a no-op setter reserves before execution, then releases the
             // unused slot.
-            std::unique_ptr<Reservation> reservation;
-            States before;
+            std::optional<persist::Reservation> reservation;
+            DevicePropertiesMap before;
+            Revision changed_revision = revision;
             if (mutating) {
-                reservation = std::make_unique<Reservation>(worker);
+                reservation.emplace(worker.reserve());
                 if (!*reservation)
                     throw std::runtime_error("Snapshot queue full; change "
                                              "rejected before execution.");
+                changed_revision = persist::nextRevision(revision);
                 before = capture(storage, dispatcher);
             }
             std::sort(targets.begin(), targets.end());
             for (const auto id : targets) {
                 try {
-                    testPoint(("target-" + std::to_string(id)).c_str(),
-                              revision);
+#if defined(SMART_HOME_RUNTIME_TESTING) && SMART_HOME_RUNTIME_TESTING == 1
+                    PERSISTENCE_TEST_POINT(
+                        ("target-" + std::to_string(id)).c_str(), revision);
+#endif
                     const auto result =
                         dispatcher.execute(Command(id, operation, values));
                     std::cout << "Device " << id << " " << operation << ": "
@@ -1176,8 +721,16 @@ int run(const Config &config) {
                              "Device command failed.");
                 }
             }
-            if (mutating && !(before == capture(storage, dispatcher))) {
-                advance();
+            if (mutating) {
+                try {
+                    if (before == capture(storage, dispatcher))
+                        return;
+                } catch (...) {
+                    // A setter may have succeeded before the comparison failed.
+                    markChanged(changed_revision);
+                    throw;
+                }
+                markChanged(changed_revision);
                 std::cout << "Changes applied; save pending revision "
                           << revision << '\n';
                 prepare(*reservation);
@@ -1257,12 +810,10 @@ int run(const Config &config) {
     bool final_queued = false;
     for (;;) {
         collect();
-        if (!final_queued) {
-            Reservation reservation(worker);
-            if (reservation) {
-                final_queued = prepare(reservation);
-                break;
-            }
+        auto reservation = worker.reserve();
+        if (reservation) {
+            final_queued = prepare(reservation);
+            break;
         }
         pollfd event{worker.eventFd(), POLLIN, 0};
         if (::poll(&event, 1, -1) < 0 && errno != EINTR)
@@ -1288,7 +839,7 @@ int run(const Config &config) {
 } // namespace
 
 int main(int argc, char *argv[]) {
-    Config config;
+    persist::PersistenceConfig config;
     log::Config logging_config;
     std::vector<const char *> logging_arguments{argv[0]};
     try {

@@ -108,12 +108,12 @@ bathroom temperature_sensor temperature.get
 ## Границы
 
 - Текущий этап объединяет devices, descriptors, drivers, registry, command,
-  execution, storage, device_management, discovery, ontology и logging.
+  execution, storage, device_management, discovery, ontology, persistence и logging.
 - MQTT, audio, OWW и обработка текста пока не подключаются. Требование
   к будущим длительным задачам не означает реализацию ИИ на этом этапе.
-- Основная реализация находится в `src/main.cpp`. Допустимы необходимые
-  изменения `src/CMakeLists.txt`, тестов, `tests/CMakeLists.txt`,
-  `cmake/Docs.cmake` и спецификаций. Новые модули согласуются отдельно.
+- Реактор и композиция находятся в `src/main.cpp`. Формат поколений,
+  проверку файлов, SQLite-свойства и фонового воркера предоставляет
+  `SmartHome::Persistence`.
 - Сохраняются границы фабрик, реестров, DeviceManager, dispatcher и хранилищ.
   Требования внешнего SDK не распространяются автоматически на C++17 приложения.
 - Прямой рабочей базы на SD-карте и автоматического disk fallback нет.

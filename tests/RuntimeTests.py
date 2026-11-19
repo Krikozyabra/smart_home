@@ -143,19 +143,42 @@ class RuntimeCase(unittest.TestCase):
         self.control = Control(Path(self.disk.name) / 'control')
         self.addCleanup(self.control.close)
 
-    def generation(self):
+    def active_path(self):
         selected = (self.state / 'CURRENT').read_text().strip()
-        path = self.state / 'generations' / selected
+        return self.state / 'generations' / selected
+
+    def generation(self):
+        path = self.active_path()
         meta = (path / 'metadata').read_text().splitlines()
+        self.assertEqual(len(meta), 4)
         self.assertEqual(meta[0], 'SMART_HOME_RUNTIME 1')
+        self.assertEqual(int(path.name.split('-')[1]), int(meta[1]))
         for name, expected in zip(('state.sqlite', 'ontology.lbdb'), meta[2:]):
             self.assertEqual(hashlib.sha256((path / name).read_bytes()).hexdigest(), expected)
         with sqlite3.connect(path / 'state.sqlite') as db:
             self.assertEqual(db.execute('select revision from runtime_meta').fetchone()[0], int(meta[1]))
             records = db.execute('select local_id,physical_id,driver_id,name from devices order by local_id').fetchall()
-            values = db.execute('select * from runtime_values order by id').fetchall()
-            self.assertEqual(len(records), len(values))
+            rows = db.execute('select device_id,property_key,value_type,raw_value,updated_at '
+                              'from device_properties').fetchall()
+            self.assertIsNone(db.execute("select 1 from sqlite_master where name='runtime_values'").fetchone())
+        values = {}
+        for device, key, kind, raw, timestamp in rows:
+            self.assertIsInstance(timestamp, int)
+            self.assertEqual(kind, {'on_off': 'bool', 'brightness': 'int',
+                                    'color': 'color', 'temperature': 'double'}[key])
+            values.setdefault(device, {})[key] = int(raw) if kind == 'int' else raw
+        self.assertEqual(sorted(values), [record[0] for record in records])
         return path, records, values
+
+    def rewrite_sqlite(self, sql, revision=None):
+        path = self.active_path()
+        with sqlite3.connect(path / 'state.sqlite') as db:
+            db.executescript(sql)
+        meta = (path / 'metadata').read_text().splitlines()
+        meta[2] = hashlib.sha256((path / 'state.sqlite').read_bytes()).hexdigest()
+        if revision is not None:
+            meta[1] = str(revision)
+        (path / 'metadata').write_text('\n'.join(meta) + '\n')
 
     def cli(self, *arguments):
         return subprocess.run([EXE, '--runtime-state-dir', str(self.state),
@@ -225,7 +248,7 @@ class Console(RuntimeCase):
         app.expect('Device 2 brightness.get: 50')
         app.finish()
         _, _, values = self.generation()
-        self.assertEqual([values[0][3], values[1][3]], [85, 50])
+        self.assertEqual([values[1]['brightness'], values[2]['brightness']], [85, 50])
 
     def test_eof_tail_and_long_line(self):
         app = App(self)
@@ -236,7 +259,7 @@ class Console(RuntimeCase):
         app.send('1 brightness.set 61')
         app.finish(None)
         _, _, values = self.generation()
-        self.assertEqual(values[0][3], 61)
+        self.assertEqual(values[1]['brightness'], 61)
 
 
 class Persistence(RuntimeCase):
@@ -260,7 +283,8 @@ class Persistence(RuntimeCase):
                 (self.control.path / (key + '.gate')).unlink()
                 _, records, values = self.generation()
                 expected = 77 if point in ('after-current', 'committed') else 50
-                self.assertEqual([v[3] for v in values[:2]], [expected, expected])
+                self.assertEqual([values[device]['brightness'] for device in (1, 2)],
+                                 [expected, expected])
                 self.assertEqual([r[0] for r in records], [1, 2, 3])
                 again = App(self)
                 again.send('show 1\nshow 2\n')
@@ -279,7 +303,7 @@ class Persistence(RuntimeCase):
             with self.subTest(corruption=corruption):
                 shutil.rmtree(self.state)
                 shutil.copytree(baseline, self.state)
-                path = self.state / 'generations' / (self.state / 'CURRENT').read_text().strip()
+                path = self.active_path()
                 if corruption == 'current':
                     (self.state / 'CURRENT').write_text('../escape\n')
                 elif corruption == 'missing':
@@ -290,17 +314,71 @@ class Persistence(RuntimeCase):
                     with open(path / 'ontology.lbdb', 'r+b') as file:
                         file.write(b'corrupt')
                 else:
-                    with sqlite3.connect(path / 'state.sqlite') as db:
-                        db.execute({'revision': 'update runtime_meta set revision=999',
-                                    'values': 'update runtime_values set brightness=200 where id=1',
-                                    'driver': "update devices set driver_id='unsupported' where local_id=1"}[corruption])
-                    meta = (path / 'metadata').read_text().splitlines()
-                    meta[2] = hashlib.sha256((path / 'state.sqlite').read_bytes()).hexdigest()
-                    (path / 'metadata').write_text('\n'.join(meta) + '\n')
+                    self.rewrite_sqlite({
+                        'revision': 'update runtime_meta set revision=999',
+                        'values': "update device_properties set raw_value='200' "
+                                  "where device_id=1 and property_key='brightness'",
+                        'driver': "update devices set driver_id='unsupported' where local_id=1",
+                    }[corruption])
+                pointer = (self.state / 'CURRENT').read_bytes()
                 result = self.cli()
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 self.assertNotIn('Runtime ready', result.stdout)
                 self.assertIn('Runtime failure:', result.stderr)
+                self.assertEqual((self.state / 'CURRENT').read_bytes(), pointer)
+
+    def test_restores_and_migrates_legacy_generation(self):
+        app = App(self)
+        app.initial_save()
+        app.finish()
+        old = self.active_path()
+        self.rewrite_sqlite("""
+            DROP TABLE device_properties;
+            CREATE TABLE runtime_values(
+                id INTEGER PRIMARY KEY, type TEXT NOT NULL, on_value INTEGER,
+                brightness INTEGER, red INTEGER, green INTEGER, blue INTEGER, temperature REAL
+            );
+            INSERT INTO runtime_values VALUES
+                (1, 'light', 1, 72, 10, 20, 30, NULL),
+                (2, 'light', 0, 41, 0, 128, 255, NULL),
+                (3, 'temperature_sensor', NULL, NULL, NULL, NULL, NULL, 29.125);
+        """)
+        again = App(self)
+        again.send('show 1\nshow 2\nshow 3\n')
+        again.expect('brightness = 72')
+        again.expect('color = 10 20 30')
+        again.expect('on_off = true')
+        again.expect('brightness = 41')
+        again.expect('color = 0 128 255')
+        again.expect('on_off = false')
+        again.expect(r'temperature = 29\.125')
+        self.assertEqual(self.active_path(), old)
+        again.finish()
+        path, _, values = self.generation()
+        self.assertNotEqual(path, old)
+        self.assertEqual(values[1], {'brightness': 72, 'color': '10,20,30', 'on_off': 'true'})
+        self.assertEqual(values[2], {'brightness': 41, 'color': '0,128,255', 'on_off': 'false'})
+        self.assertEqual(values[3], {'temperature': '29.125'})
+
+    def test_revision_overflow_rejects_mutation(self):
+        app = App(self)
+        app.initial_save()
+        app.finish()
+        revision = 2**63 - 1
+        old = self.active_path()
+        self.rewrite_sqlite(f'update runtime_meta set revision={revision}', revision=revision)
+        new = old.with_name(f'gen-{revision}-overflow')
+        old.rename(new)
+        (self.state / 'CURRENT').write_text(new.name + '\n')
+
+        again = App(self, ready=False)
+        again.expect('Runtime ready')
+        again.expect('Error: Runtime revision overflow')  # Initial scan cannot mutate.
+        again.send('1 brightness.set 80\n1 brightness.get\n')
+        again.expect('Error: Runtime revision overflow')
+        again.expect('Device 1 brightness.get: 50')
+        again.finish()
+        self.assertEqual(self.generation()[2][1]['brightness'], 50)
 
 
 class Events(RuntimeCase):
@@ -336,7 +414,7 @@ class Events(RuntimeCase):
         self.control.release('before-files-4')
         app.expect('Saved revision 4')
         app.finish()
-        self.assertEqual(self.generation()[2][0][3], 72)
+        self.assertEqual(self.generation()[2][1]['brightness'], 72)
 
     def test_shutdown_waits_for_queue_and_signals(self):
         for signum in (signal.SIGINT, signal.SIGTERM):
@@ -368,6 +446,18 @@ class Events(RuntimeCase):
 
 
 class Failures(RuntimeCase):
+    def test_post_commit_cleanup_failure(self):
+        app = App(self)
+        app.initial_save()
+        old = self.active_path()
+        self.control.fail('committed-3')
+        self.assertEqual(app.change('1 brightness.set 76'), 3)
+        self.assertTrue(old.is_dir())
+        self.assertEqual(self.generation()[2][1]['brightness'], 76)
+        (self.control.path / 'committed-3.fail').unlink()
+        app.finish()
+        self.assertFalse(old.exists())
+
     def test_retry_preparation_and_worker_failures(self):
         app = App(self)
         app.initial_save()
@@ -381,12 +471,20 @@ class Failures(RuntimeCase):
                 app.expect('Save preparation failed' if point == 'prepare' else f'Save failed for revision {revision}')
                 if point != 'after-current':
                     self.assertEqual(self.generation()[0].name, baseline)
+                    self.assertEqual([path.name for path in (self.state / 'generations').iterdir()],
+                                     [baseline])
+                    self.assertFalse((self.state / 'CURRENT.tmp').exists())
+                else:
+                    self.assertNotEqual(self.generation()[0].name, baseline)
+                    self.assertTrue((self.state / 'generations' / baseline).is_dir())
                 app.send('1 brightness.get\n')
                 app.expect(f'Device 1 brightness.get: {brightness}')
                 (self.control.path / (key + '.fail')).unlink()
                 app.send('save\n')
                 app.expect(f'Saved revision {revision}')
                 baseline = self.generation()[0].name
+                self.assertEqual([path.name for path in (self.state / 'generations').iterdir()],
+                                 [baseline])
         app.finish()
 
     def test_final_failure_even_after_same_revision_was_saved(self):
