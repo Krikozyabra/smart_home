@@ -10,10 +10,19 @@ target_link_libraries(smart_home PRIVATE
     SmartHome::Command
     SmartHome::Execution
     SmartHome::Storage
+    SmartHome::DeviceManagement
+    SmartHome::Discovery
     SmartHome::Ontology
+    SmartHome::Persistence
 )
 
 target_link_libraries(smart_home PRIVATE SmartHome::Logging)
+set_target_properties(smart_home PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+target_compile_options(smart_home PRIVATE -Wall -Wextra -Wpedantic)
+if(SMART_HOME_RUNTIME_TESTING)
+    target_include_directories(smart_home PRIVATE ${PROJECT_SOURCE_DIR}/persistence/src)
+    target_compile_definitions(smart_home PRIVATE SMART_HOME_RUNTIME_TESTING=1)
+endif()
 
 option(SMART_HOME_BUILD_MQTT_DEMO "Build the standalone MQTT read/write demo" ON)
 if(SMART_HOME_BUILD_MQTT_DEMO)

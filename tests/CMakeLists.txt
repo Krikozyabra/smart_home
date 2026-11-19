@@ -41,6 +41,13 @@ NAME sql_storage_tests
 COMMAND sql_storage_tests
 )
 
+add_executable(sqlite_dump_tests SQLiteDumpTests.cpp)
+target_include_directories(sqlite_dump_tests PRIVATE ${PROJECT_SOURCE_DIR})
+target_link_libraries(sqlite_dump_tests PRIVATE SmartHome::Storage SmartHome::Logging spdlog::spdlog)
+set_target_properties(sqlite_dump_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+add_test(NAME sqlite_dump_tests COMMAND sqlite_dump_tests)
+set_tests_properties(sqlite_dump_tests PROPERTIES TIMEOUT 30)
+
 add_executable(factories_tests
 FactoriesTests.cpp
 )
@@ -165,7 +172,7 @@ if(SMART_HOME_MQTT_INTEGRATION_TESTS AND UNIX)
     endif()
 endif()
 
-foreach(suite Config Storage Sync Concurrency)
+foreach(suite Config Storage Dump Concurrency)
     string(TOLOWER "${suite}" suite_lower)
     set(target "ontology_${suite_lower}_tests")
     add_executable(${target} Ontology${suite}Tests.cpp)
@@ -225,3 +232,31 @@ if(TARGET smart_home_audio_oww_demo)
         set_tests_properties(audio_oww_demo_tests PROPERTIES TIMEOUT 60)
     endif()
 endif()
+
+set(persistence_suites StateStore GenerationManager Worker)
+set(persistence_targets state_store generation_manager worker)
+foreach(suite target IN ZIP_LISTS persistence_suites persistence_targets)
+    set(test_target persistence_${target}_tests)
+    add_executable(${test_target} Persistence${suite}Tests.cpp)
+    target_link_libraries(${test_target} PRIVATE SmartHome::Persistence SmartHome::Storage)
+    set_target_properties(${test_target} PROPERTIES CXX_EXTENSIONS OFF)
+    add_test(NAME ${test_target} COMMAND ${test_target})
+    set_tests_properties(${test_target} PROPERTIES TIMEOUT 30)
+endforeach()
+
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+# The test executable uses the instrumented persistence library.
+add_executable(runtime_test_app ${PROJECT_SOURCE_DIR}/src/main.cpp)
+get_target_property(runtime_libraries smart_home LINK_LIBRARIES)
+list(REMOVE_ITEM runtime_libraries SmartHome::Persistence)
+target_link_libraries(runtime_test_app PRIVATE ${runtime_libraries} SmartHome::PersistenceTesting)
+target_include_directories(runtime_test_app PRIVATE ${PROJECT_SOURCE_DIR}/persistence/src)
+target_compile_definitions(runtime_test_app PRIVATE SMART_HOME_RUNTIME_TESTING=1)
+set_target_properties(runtime_test_app PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+target_compile_options(runtime_test_app PRIVATE -Wall -Wextra -Wpedantic)
+foreach(suite console persistence events failures)
+    add_test(NAME runtime_${suite}_tests
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/RuntimeTests.py
+            $<TARGET_FILE:runtime_test_app> ${suite})
+    set_tests_properties(runtime_${suite}_tests PROPERTIES TIMEOUT 120)
+endforeach()

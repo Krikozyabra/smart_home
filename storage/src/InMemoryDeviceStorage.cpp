@@ -8,9 +8,17 @@
 
 namespace smart_home {
 
+void InMemoryDeviceStorage::ensureOpen() const {
+    if (closed_)
+        throw std::logic_error("Storage is closed.");
+}
+
+void InMemoryDeviceStorage::close() { closed_ = true; }
+
 DeviceRecord InMemoryDeviceStorage::insert(const std::string &physical_id,
                                            const std::string &driver_id,
                                            const std::string &name) {
+    ensureOpen();
     if (physical_id.empty())
         throw std::invalid_argument("Physical id must not be empty");
     if (driver_id.empty())
@@ -30,6 +38,7 @@ DeviceRecord InMemoryDeviceStorage::insert(const std::string &physical_id,
 std::optional<DeviceRecord>
 InMemoryDeviceStorage::findByPhysicalId(const std::string &physical_id,
                                         const std::string &driver_id) const {
+    ensureOpen();
     if (physical_id.empty())
         throw std::invalid_argument("Physical id must not be empty");
     if (driver_id.empty())
@@ -42,11 +51,17 @@ InMemoryDeviceStorage::findByPhysicalId(const std::string &physical_id,
 }
 
 std::vector<DeviceRecord> InMemoryDeviceStorage::getAll() const {
+    ensureOpen();
     std::vector<DeviceRecord> result;
     for (const auto &iter : records) {
         result.push_back(iter.second);
     }
     return result;
+}
+
+void InMemoryDeviceStorage::dumpToFile(const std::string &) {
+    ensureOpen();
+    throw std::logic_error("InMemoryDeviceStorage does not support dumping to a file");
 }
 
 } // namespace smart_home

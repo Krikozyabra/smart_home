@@ -46,6 +46,31 @@ fs::path canonicalDestination(const std::string& path) {
     return canonical;
 }
 
+fs::path validateDumpDestination(const std::string& path, const fs::path& runtime,
+                                 const fs::path& database) {
+    if (path.empty() || path.find('\0') != std::string::npos)
+        throw std::invalid_argument("Ontology dump path must be nonempty and contain no NUL.");
+    const auto absolute = fs::absolute(path);
+    const auto status = fs::symlink_status(absolute);
+    if (fs::is_symlink(status) || (fs::exists(status) && !fs::is_regular_file(status)))
+        throw std::invalid_argument("Ontology dump destination must be a regular file, not a link or directory.");
+    if (!fs::is_directory(absolute.parent_path()))
+        throw std::invalid_argument("Ontology dump parent directory must exist.");
+    const auto destination = fs::canonical(absolute.parent_path()) / absolute.filename();
+    const auto workspace = fs::canonical(runtime.parent_path());
+    const auto activeLock = fs::path(database.string() + ".lock");
+    // Reject the entire workspace, including engine sidecars, and inode aliases.
+    const auto relative = destination.lexically_relative(workspace);
+    if ((!relative.empty() && *relative.begin() != "..") || destination == activeLock ||
+        (fs::exists(destination) &&
+         ((fs::exists(runtime) && fs::equivalent(destination, runtime)) ||
+          fs::equivalent(destination, activeLock))))
+        throw std::invalid_argument("Ontology dump cannot replace its workspace or active lockfile.");
+    if (fs::exists(status) && fs::hard_link_count(absolute) != 1)
+        throw std::invalid_argument("Hard-linked ontology dump destinations are unsupported.");
+    return destination;
+}
+
 int acquireLock(const fs::path& destination) {
     const auto path = destination.string() + ".lock";
     const int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
@@ -130,7 +155,7 @@ void atomicSnapshot(const fs::path& source, const fs::path& destination, const S
         std::error_code ignored;
         if (!renamed) fs::remove(temporary, ignored);
         if (renamed)
-            throw std::runtime_error("Ontology snapshot replaced, but directory durability is uncertain; retry sync.");
+            throw std::runtime_error("Ontology snapshot replaced, but directory durability is uncertain; retry dumpToFile.");
         std::rethrow_exception(failure);
     }
 }

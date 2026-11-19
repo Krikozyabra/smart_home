@@ -1,5 +1,4 @@
 #include "TestUtil.h"
-#include "device_management/DeviceManager.h"
 #include "storage/DeviceRecord.h"
 #include "storage/InMemoryDeviceStorage.h"
 
@@ -36,4 +35,33 @@ int main() {
       [&] { storage.findByPhysicalId("D0:CC:00", ""); });
 
   require(storage.getAll().size() == 2, "All records must be in memory");
+
+  smart_home::IDeviceStorage &inventory = storage;
+  inventory.close();
+  inventory.close();
+  expectException<std::logic_error>([&] { inventory.getAll(); });
+  expectException<std::logic_error>(
+      [&] { inventory.findByPhysicalId("AC:12:DD", "wifi"); });
+  expectException<std::logic_error>(
+      [&] { inventory.insert("new", "wifi", "Name"); });
+  expectException<std::logic_error>([&] { inventory.dumpToFile("unused.db"); });
+  try {
+    inventory.insert("", "", "");
+    require(false, "Closed storage must reject invalid insert arguments");
+  } catch (const std::logic_error &error) {
+    require(std::string(error.what()) == "Storage is closed.",
+            "Closed state is checked before insert arguments");
+  }
+  try {
+    inventory.findByPhysicalId("", "");
+    require(false, "Closed storage must reject invalid lookup arguments");
+  } catch (const std::logic_error &error) {
+    require(std::string(error.what()) == "Storage is closed.",
+            "Closed state is checked before lookup arguments");
+  }
+
+  smart_home::InMemoryDeviceStorage empty;
+  empty.close();
+  empty.close();
+  expectException<std::logic_error>([&] { empty.getAll(); });
 }

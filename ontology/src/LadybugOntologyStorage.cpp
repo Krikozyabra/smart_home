@@ -3,12 +3,10 @@
 #include "logging/Logging.h"
 #include <lbug.hpp>
 #include <algorithm>
-#include <condition_variable>
 #include <exception>
 #include <map>
 #include <mutex>
 #include <stdexcept>
-#include <thread>
 #include <unordered_map>
 #include <variant>
 
@@ -36,7 +34,7 @@ std::string text(Tuple& row, std::size_t column) {
 template<class Record> Record record(Tuple& row);
 template<> RoomRecord record(Tuple& row) { return {text(row, 0), text(row, 1)}; }
 template<> OntologyDeviceRecord record(Tuple& row) {
-    return {row.getValue(0)->getValue<std::int64_t>(), text(row, 1), text(row, 2)};
+    return {row.getValue(0)->getValue<std::int64_t>(), text(row, 1)};
 }
 template<> AbilityRecord record(Tuple& row) { return {text(row, 0), text(row, 1), text(row, 2)}; }
 } // namespace
@@ -46,7 +44,7 @@ public:
     explicit Impl(OntologyConfig input) : config(std::move(input)) {
         validateConfig(config);
         try {
-            durable = detail::canonicalDestination(config.persistent_path);
+            durable = detail::canonicalDestination(config.database_path);
             lock.reset(detail::acquireLock(durable));
             detail::removeStaleSnapshots(durable);
             const auto existingSize = fs::exists(durable) ? fs::file_size(durable) : 0;
@@ -55,13 +53,15 @@ public:
             // Reserve room for the source, checkpoint growth, WAL and shadow files.
             const auto reserve = std::max<std::uintmax_t>(64 * 1024 * 1024, existingSize * 3);
             try {
-                workspace = detail::makeWorkspace(config.ram_workspace_base, reserve);
+                workspace = detail::makeWorkspace(fs::absolute(config.ram_workspace_base), reserve);
             } catch (...) {
                 if (!config.allow_disk_fallback) throw;
                 workspace = detail::makeWorkspace(durable.parent_path(), reserve);
                 logging::log(logging::Level::Warn, "Ontology", "RAM workspace unavailable; using explicitly enabled disk workspace.");
             }
             runtime = workspace / "workspace.lbdb";
+            if (!config.dump_path.empty())
+                config.dump_path = detail::validateDumpDestination(config.dump_path, runtime, durable).string();
             if (fs::exists(durable)) {
                 // Only the engine can recover sidecars. Never discard a WAL or
                 // take a .lbdb-only copy of an interrupted database.
@@ -76,11 +76,8 @@ public:
             }
             openEngine(runtime);
             schema(!fs::exists(durable));
-            if (!fs::exists(durable)) {
-                dirty = true;
-                syncLocked(true);
-            }
-            if (config.sync_interval.count() > 0) worker = std::thread([this] { workerLoop(); });
+            if (!fs::exists(durable) && !config.dump_path.empty())
+                dumpLocked(config.dump_path, true);
         } catch (...) {
             closeEngine();
             cleanupWorkspace();
@@ -138,7 +135,6 @@ public:
         try {
             operation();
             query("COMMIT");
-            dirty = true;
         } catch (...) {
             const auto failure = std::current_exception();
             try { query("ROLLBACK"); }
@@ -147,39 +143,32 @@ public:
         }
     }
 
-    void sync() {
+    void dumpToFile(const std::string& path) {
         std::lock_guard<std::mutex> guard(transactionMutex);
         requireOpen();
-        syncLocked(true);
+        dumpLocked(path, true);
     }
 
     void close() {
         std::lock_guard<std::mutex> lifecycleGuard(closeMutex);
-        {
-            std::lock_guard<std::mutex> guard(workerMutex);
-            stop = true;
-        }
-        workerCondition.notify_all();
-        if (worker.joinable()) worker.join(); // Never join while holding transactionMutex.
         std::lock_guard<std::mutex> guard(transactionMutex);
         if (closed) return;
-        // A failed reopen still leaves a checkpointed RAM file which close can
-        // save. No subsequent query is accepted in that state.
-        syncLocked(false);
+        // A failed reopen leaves a checkpointed RAM file which close can save.
+        if (!config.dump_path.empty()) {
+            try { dumpLocked(config.dump_path, false); }
+            catch (const std::invalid_argument& error) {
+                throw std::runtime_error("Final ontology dump failed: " + std::string(error.what()));
+            }
+        }
         closeEngine();
-        closed = true;
         cleanupWorkspace();
         lock.reset();
+        closed = true;
     }
 
     mutable std::mutex transactionMutex;
     detail::SnapshotHook snapshotHook;
     fs::path runtime;
-    std::mutex workerMutex;
-    std::condition_variable workerCondition;
-    bool requested = false;
-    std::size_t attempts = 0;
-    std::thread worker;
 
 private:
     lbug::main::SystemConfig engineConfig() const {
@@ -216,7 +205,7 @@ private:
         if (fresh) {
             transaction([&] {
                 query("CREATE NODE TABLE rooms(id STRING, name STRING, PRIMARY KEY(id))");
-                query("CREATE NODE TABLE devices(id INT64, name STRING, type STRING, PRIMARY KEY(id))");
+                query("CREATE NODE TABLE devices(id INT64, name STRING, PRIMARY KEY(id))");
                 query("CREATE NODE TABLE abilities(id STRING, name STRING, category STRING, PRIMARY KEY(id))");
                 query("CREATE REL TABLE LOCATED_IN(FROM devices TO rooms)");
                 query("CREATE REL TABLE HAS_FEATURE(FROM devices TO abilities)");
@@ -241,7 +230,6 @@ private:
             }
             std::map<std::string, std::pair<std::string, bool>> wanted{
                 {"id", {table == "devices" ? "INT64" : "STRING", true}}, {"name", {"STRING", false}}};
-            if (table == "devices") wanted.emplace("type", std::make_pair("STRING", false));
             if (table == "abilities") wanted.emplace("category", std::make_pair("STRING", false));
             if (properties != wanted) throw std::runtime_error("Incompatible ontology properties; explicit migration required.");
         }
@@ -258,16 +246,15 @@ private:
             throw std::runtime_error("Incompatible ontology: duplicate or ambiguous relationships.");
     }
 
-    void syncLocked(bool reopen) {
-        if (!dirty) return;
+    void dumpLocked(const std::string& path, bool reopen) {
+        const auto destination = detail::validateDumpDestination(path, runtime, durable);
         if (connection) {
             query("CHECKPOINT");
             closeEngine(); // No connection, transaction or background engine work can change the snapshot.
         }
         std::exception_ptr failure;
         try {
-            detail::atomicSnapshot(runtime, durable, snapshotHook);
-            dirty = false;
+            detail::atomicSnapshot(runtime, destination, snapshotHook);
         } catch (...) { failure = std::current_exception(); }
         if (reopen || failure) {
             try {
@@ -281,21 +268,6 @@ private:
         if (failure) std::rethrow_exception(failure);
     }
 
-    void workerLoop() noexcept {
-        std::unique_lock<std::mutex> guard(workerMutex);
-        while (!stop) {
-            workerCondition.wait_for(guard, config.sync_interval, [&] { return stop || requested; });
-            if (stop) break;
-            requested = false;
-            guard.unlock();
-            try { sync(); }
-            catch (...) { logging::log(logging::Level::Error, "Ontology", "Periodic snapshot failed; retrying at next interval."); }
-            guard.lock();
-            ++attempts;
-            workerCondition.notify_all();
-        }
-    }
-
     OntologyConfig config;
     fs::path durable;
     fs::path workspace;
@@ -303,14 +275,12 @@ private:
     std::unique_ptr<lbug::main::Database> database;
     std::unique_ptr<lbug::main::Connection> connection;
     std::mutex closeMutex;
-    bool stop = false;
     bool closed = false;
-    bool dirty = false;
 };
 
 LadybugOntologyStorage::LadybugOntologyStorage(OntologyConfig config) : impl_(std::make_unique<Impl>(std::move(config))) {}
 LadybugOntologyStorage::~LadybugOntologyStorage() noexcept = default;
-void LadybugOntologyStorage::sync() { impl_->sync(); }
+void LadybugOntologyStorage::dumpToFile(const std::string& path) { impl_->dumpToFile(path); }
 void LadybugOntologyStorage::close() { impl_->close(); }
 
 // Every public operation owns the transaction mutex until all result values have
@@ -344,7 +314,7 @@ std::optional<RoomRecord> LadybugOntologyStorage::getDeviceRoom(DeviceId device_
 std::vector<OntologyDeviceRecord> LadybugOntologyStorage::getDevicesInRoom(const std::string& room_id) const {
     ONTOLOGY_GUARD;
     nonempty(room_id); impl_->endpoint("rooms", room_id);
-    return impl_->records<OntologyDeviceRecord>("MATCH (d:devices)-[:LOCATED_IN]->(r:rooms) WHERE r.id = $id RETURN d.id, d.name, d.type ORDER BY d.id", {{"id", room_id}});
+    return impl_->records<OntologyDeviceRecord>("MATCH (d:devices)-[:LOCATED_IN]->(r:rooms) WHERE r.id = $id RETURN d.id, d.name ORDER BY d.id", {{"id", room_id}});
 }
 void LadybugOntologyStorage::addDeviceAbility(DeviceId device_id, const std::string& ability_id) {
     ONTOLOGY_GUARD;
@@ -372,12 +342,12 @@ std::vector<AbilityRecord> LadybugOntologyStorage::getDeviceAbilities(DeviceId d
 std::vector<OntologyDeviceRecord> LadybugOntologyStorage::getDevicesWithAbility(const std::string& ability_id) const {
     ONTOLOGY_GUARD;
     nonempty(ability_id); impl_->endpoint("abilities", ability_id);
-    return impl_->records<OntologyDeviceRecord>("MATCH (d:devices)-[:HAS_FEATURE]->(a:abilities) WHERE a.id = $id RETURN d.id, d.name, d.type ORDER BY d.id", {{"id", ability_id}});
+    return impl_->records<OntologyDeviceRecord>("MATCH (d:devices)-[:HAS_FEATURE]->(a:abilities) WHERE a.id = $id RETURN d.id, d.name ORDER BY d.id", {{"id", ability_id}});
 }
 std::optional<DeviceOntologyDetails> LadybugOntologyStorage::getDeviceDetails(DeviceId device_id) const {
     ONTOLOGY_GUARD;
     validId(device_id);
-    const auto devices = impl_->records<OntologyDeviceRecord>("MATCH (d:devices) WHERE d.id = $id RETURN d.id, d.name, d.type", {{"id", device_id}});
+    const auto devices = impl_->records<OntologyDeviceRecord>("MATCH (d:devices) WHERE d.id = $id RETURN d.id, d.name", {{"id", device_id}});
     if (devices.empty()) return std::nullopt;
     DeviceOntologyDetails details{devices.front(), {}, {}};
     auto rooms = impl_->records<RoomRecord>("MATCH (d:devices)-[:LOCATED_IN]->(r:rooms) WHERE d.id = $id RETURN r.id, r.name", {{"id", device_id}});
@@ -396,18 +366,6 @@ fs::path OntologyTestAccess::runtimePath(const LadybugOntologyStorage& storage) 
     std::lock_guard<std::mutex> guard(storage.impl_->transactionMutex);
     return storage.impl_->runtime;
 }
-namespace {
-template<class Impl> void waitForAttempt(Impl& impl, bool trigger) {
-    std::unique_lock<std::mutex> guard(impl.workerMutex);
-    if (!impl.worker.joinable()) throw std::logic_error("Periodic worker is not running.");
-    const auto next = impl.attempts + 1;
-    if (trigger) { impl.requested = true; impl.workerCondition.notify_all(); }
-    if (!impl.workerCondition.wait_for(guard, std::chrono::seconds(10), [&] { return impl.attempts >= next; }))
-        throw std::runtime_error("Periodic sync timed out.");
-}
-} // namespace
-void OntologyTestAccess::triggerPeriodicSync(LadybugOntologyStorage& storage) { waitForAttempt(*storage.impl_, true); }
-void OntologyTestAccess::waitForPeriodicSync(LadybugOntologyStorage& storage) { waitForAttempt(*storage.impl_, false); }
 } // namespace detail
 
 // Node CRUD implementations follow below.
@@ -442,21 +400,21 @@ bool LadybugOntologyStorage::deleteRoom(const std::string& room_id) {
 
 void LadybugOntologyStorage::addDevice(const OntologyDeviceRecord& device) {
     ONTOLOGY_GUARD;
-    validId(device.id); nonempty(device.name); nonempty(device.type);
+    validId(device.id); nonempty(device.name);
     impl_->transaction([&] {
-        impl_->query("MERGE (n:devices {id: $id}) SET n.name = $name, n.type = $extra", {{"id", device.id}, {"name", device.name}, {"extra", device.type}});
+        impl_->query("MERGE (n:devices {id: $id}) SET n.name = $name", {{"id", device.id}, {"name", device.name}});
     });
 }
 std::optional<OntologyDeviceRecord> LadybugOntologyStorage::getDevice(DeviceId id) const {
     ONTOLOGY_GUARD;
     validId(id);
-    auto values = impl_->records<OntologyDeviceRecord>("MATCH (n:devices) WHERE n.id = $id RETURN n.id, n.name, n.type", {{"id", id}});
+    auto values = impl_->records<OntologyDeviceRecord>("MATCH (n:devices) WHERE n.id = $id RETURN n.id, n.name", {{"id", id}});
     if (values.empty()) return std::nullopt;
     return values.front();
 }
 std::vector<OntologyDeviceRecord> LadybugOntologyStorage::getAllDevices() const {
     ONTOLOGY_GUARD;
-    return impl_->records<OntologyDeviceRecord>("MATCH (n:devices) RETURN n.id, n.name, n.type ORDER BY n.id");
+    return impl_->records<OntologyDeviceRecord>("MATCH (n:devices) RETURN n.id, n.name ORDER BY n.id");
 }
 bool LadybugOntologyStorage::deleteDevice(DeviceId id) {
     ONTOLOGY_GUARD;

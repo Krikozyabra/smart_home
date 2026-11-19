@@ -1,6 +1,8 @@
 #include "storage/SQLiteDeviceStorage.h"
 #include "sqlite3.h"
 #include "storage/DeviceRecord.h"
+#include "SQLiteDump.h"
+#include "logging/Logging.h"
 
 #include <memory>
 #include <optional>
@@ -58,7 +60,8 @@ void SQLiteDeviceStorage::createSchema() {
     }
 }
 
-SQLiteDeviceStorage::SQLiteDeviceStorage(const std::string &database_path) {
+SQLiteDeviceStorage::SQLiteDeviceStorage(const std::string &database_path,
+                                       const std::string &dump_path) {
     int rc =
         sqlite3_open_v2(database_path.c_str(), &database,
                         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr);
@@ -74,6 +77,8 @@ SQLiteDeviceStorage::SQLiteDeviceStorage(const std::string &database_path) {
     }
     try {
         createSchema();
+        if (!dump_path.empty())
+            this->dump_path = storage_detail::validateDumpPath(database, dump_path).string();
     } catch (...) {
         sqlite3_close_v2(database);
         database = nullptr;
@@ -81,16 +86,58 @@ SQLiteDeviceStorage::SQLiteDeviceStorage(const std::string &database_path) {
     }
 }
 
-SQLiteDeviceStorage::~SQLiteDeviceStorage() {
+SQLiteDeviceStorage::~SQLiteDeviceStorage() noexcept {
+    try {
+        close();
+    } catch (const std::exception &error) {
+        logging::log(logging::Level::Error, "Storage", error.what(),
+                     {-1, "close"});
+    } catch (...) {
+        logging::log(logging::Level::Error, "Storage", "Final SQLite close failed",
+                     {-1, "close"});
+    }
+    // A failed final dump must not leak the working connection on destruction.
     if (database != nullptr) {
         sqlite3_close_v2(database);
         database = nullptr;
     }
 }
 
+void SQLiteDeviceStorage::ensureOpen() const {
+    if (database == nullptr)
+        throw std::logic_error("Storage is closed.");
+}
+
+void SQLiteDeviceStorage::close() {
+    if (database == nullptr)
+        return;
+
+    if (!dump_path.empty()) {
+        try {
+            dumpToFile(dump_path);
+        } catch (const std::invalid_argument &error) {
+            // The configured path may have become invalid since construction.
+            throw std::runtime_error("Final SQLite dump failed: " +
+                                     std::string(error.what()));
+        }
+    }
+
+    const int rc = sqlite3_close_v2(database);
+    if (rc != SQLITE_OK)
+        throw std::runtime_error("Failed to close SQLite database: " +
+                                 std::string(sqlite3_errstr(rc)));
+    database = nullptr;
+}
+
+void SQLiteDeviceStorage::dumpToFile(const std::string &path) {
+    ensureOpen();
+    storage_detail::dumpToFile(database, path);
+}
+
 std::optional<DeviceRecord>
 SQLiteDeviceStorage::findByPhysicalId(const std::string &physical_id,
                                       const std::string &driver_id) const {
+    ensureOpen();
     if (physical_id.empty())
         throw std::invalid_argument("Physical id must not be empty");
     if (driver_id.empty())
@@ -133,6 +180,7 @@ SQLiteDeviceStorage::findByPhysicalId(const std::string &physical_id,
 DeviceRecord SQLiteDeviceStorage::insert(const std::string &physical_id,
                                          const std::string &driver_id,
                                          const std::string &default_name) {
+    ensureOpen();
     if (physical_id.empty())
         throw std::invalid_argument("Physical id must not be empty");
     if (driver_id.empty())
@@ -174,6 +222,7 @@ DeviceRecord SQLiteDeviceStorage::insert(const std::string &physical_id,
 }
 
 std::vector<DeviceRecord> SQLiteDeviceStorage::getAll() const {
+    ensureOpen();
     std::vector<DeviceRecord> result;
     std::string find_all_sql = "SELECT local_id, physical_id, driver_id, name "
                                "FROM devices;";

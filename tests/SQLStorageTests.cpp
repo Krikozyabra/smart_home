@@ -1,5 +1,4 @@
 #include "TestUtil.h"
-#include "device_management/DeviceManager.h"
 #include "storage/DeviceRecord.h"
 #include "storage/SQLiteDeviceStorage.h"
 
@@ -60,6 +59,40 @@ int main() {
                                               "Лампа's на кириллице");
         require(bluetooth_light.name == "Лампа's на кириллице",
                 "SQLite must preserve UTF-8 text and apostrophes");
+
+        smart_home::IDeviceStorage &inventory = storage;
+        inventory.close();
+        inventory.close();
+        expectException<std::logic_error>([&] { inventory.getAll(); });
+        expectException<std::logic_error>(
+            [&] { inventory.findByPhysicalId("AC:12:DD", "wifi.light"); });
+        expectException<std::logic_error>(
+            [&] { inventory.insert("new", "wifi.light", "Name"); });
+        try {
+            inventory.insert("", "", "");
+            require(false, "Closed storage must reject invalid insert arguments");
+        } catch (const std::logic_error &error) {
+            require(std::string(error.what()) == "Storage is closed.",
+                    "Closed state is checked before insert arguments");
+        }
+        try {
+            inventory.findByPhysicalId("", "");
+            require(false, "Closed storage must reject invalid lookup arguments");
+        } catch (const std::logic_error &error) {
+            require(std::string(error.what()) == "Storage is closed.",
+                    "Closed state is checked before lookup arguments");
+        }
+        try {
+            inventory.dumpToFile("");
+            require(false, "Closed storage must reject dump");
+        } catch (const std::logic_error &error) {
+            require(std::string(error.what()) == "Storage is closed.",
+                    "Closed state is checked before dump path validation");
+        }
+
+        smart_home::SQLiteDeviceStorage reopened(db_file.getStringPath());
+        require(reopened.findByPhysicalId("AC:12:DD", "wifi.light") == saved_wifi,
+                "File database can be reopened before closed object destruction");
     }
     {
         smart_home::SQLiteDeviceStorage storage(db_file.getStringPath());
@@ -76,4 +109,8 @@ int main() {
         require(storage.getAll().size() == 3,
                 "All records must survive database reopening");
     }
+    smart_home::SQLiteDeviceStorage empty(":memory:");
+    empty.close();
+    empty.close();
+    expectException<std::logic_error>([&] { empty.getAll(); });
 }
