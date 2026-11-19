@@ -31,9 +31,8 @@ struct Color {
      * @param other Другой объект Color для сравнения.
      * @return true, если все компоненты цвета совпадают, иначе false.
      */
-    bool operator==(const Color &other) const noexcept {
-        return ((red == other.red) && (green == other.green) &&
-                (blue == other.blue));
+    constexpr bool operator==(const Color &other) const noexcept {
+        return red == other.red && green == other.green && blue == other.blue;
     }
 
     /**
@@ -41,8 +40,12 @@ struct Color {
      * @param other Перемещаемый объект Color для сравнения.
      * @return true, если все компоненты цвета совпадают, иначе false.
      */
-    bool operator==(Color &&other) const noexcept {
-        return ((red == other.red) && (green == other.green) &&
-                (blue == other.blue));
+    constexpr bool operator==(Color &&other) const noexcept {
+        return *this == other;
+    }
+
+    /// @brief Проверяет, отличается ли хотя бы одна компонента цвета.
+    constexpr bool operator!=(const Color &other) const noexcept {
+        return !(*this == other);
     }
 };

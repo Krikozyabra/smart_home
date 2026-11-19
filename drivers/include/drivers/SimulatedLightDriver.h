@@ -6,7 +6,6 @@
 #pragma once
 
 #include "common/DeviceId.h"
-#include "descriptors/DeviceDescriptor.h"
 #include "devices/types/Color.h"
 #include "drivers/DeviceDriverBase.h"
 
@@ -20,35 +19,20 @@ namespace smart_home {
  * @brief Драйвер для симуляции управляемого источника света (умной лампы).
  */
 class SimulatedLightDriver final : public DeviceDriverBase {
-  private:
-    /**
-     * @brief Генерирует дескриптор устройства симулированного источника света.
-     *
-     * Описание позиционных параметров:
-     * - Первый параметр (DeviceId): идентификатор устройства.
-     * - Второй параметр (const std::string &): физический идентификатор устройства.
-     * - Третий параметр (const std::string &): имя устройства.
-     *
-     * @return Сгенерированный дескриптор устройства DeviceDescriptor.
-     */
-    static DeviceDescriptor generateDeviceDescriptor(DeviceId,
-                                                     const std::string &,
-                                                     const std::string &);
-
   public:
     /**
      * @brief Создает экземпляр драйвера симулированного источника света.
-     *
-     * Описание позиционных параметров:
-     * - Первый параметр (DeviceId): уникальный идентификатор устройства.
-     * - Второй параметр (std::string): физический идентификатор устройства.
-     * - Третий параметр (std::string): имя устройства.
-     * - Четвертый параметр (bool): начальное состояние питания (включено/выключено).
-     * - Пятый параметр (uint8_t): начальный уровень яркости.
-     * - Шестой параметр (Color): начальный цвет освещения.
+     * @param local_id Локальный идентификатор.
+     * @param physical_id Физический идентификатор.
+     * @param name Имя устройства.
+     * @param is_on Начальное состояние включения.
+     * @param brightness Начальная яркость в процентах.
+     * @param color Начальный цвет RGB.
+     * @throws std::invalid_argument Если яркость выше 100.
      */
-    SimulatedLightDriver(DeviceId, std::string, std::string, bool, uint8_t,
-                         Color);
+    SimulatedLightDriver(DeviceId local_id, std::string physical_id,
+                         std::string name, bool is_on, std::uint8_t brightness,
+                         Color color);
 };
 
 } // namespace smart_home

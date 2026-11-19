@@ -1,4 +1,5 @@
 add_library(smart_home_drivers STATIC
+    src/CapabilityCatalog.cpp
     src/SimulatedLightDriver.cpp
     src/SimulatedTemperatureSensorDriver.cpp
     src/factories/SimulatedLightDriverFactory.cpp

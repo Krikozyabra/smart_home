@@ -1,8 +1,8 @@
 #include "DeviceManagementTestSupport.h"
 #include "TestUtil.h"
 #include "device_management/DeviceManager.h"
-#include "devices/interfaces/IBrightness.h"
-#include "devices/interfaces/IOnOff.h"
+#include "devices/views/BrightnessView.h"
+#include "devices/views/OnOffView.h"
 #include "drivers/SimulatedLightDriver.h"
 #include "drivers/factories/SimulatedLightDriverFactory.h"
 #include "storage/InMemoryDeviceStorage.h"
@@ -109,8 +109,8 @@ void registrationAndRepair() {
                 "First registration must create inventory and driver");
         f.complete(record);
         auto *driver = f.devices.find(record.local_id);
-        auto &brightness = dynamic_cast<IBrightness &>(driver->device());
-        auto &power = dynamic_cast<IOnOff &>(driver->device());
+        auto brightness = driver->device().view<BrightnessView>();
+        auto power = driver->device().view<OnOffView>();
         brightness.setBrightness(83);
         power.setOn(true);
         f.database.graph.addRoom({"custom", "User room"});

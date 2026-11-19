@@ -1,3 +1,8 @@
+add_executable(device_tests DeviceTests.cpp)
+target_link_libraries(device_tests PRIVATE SmartHome::Devices)
+set_target_properties(device_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+add_test(NAME device_tests COMMAND device_tests)
+
 add_executable(command_dispatcher_tests
 CommandDispatcherTests.cpp
 )

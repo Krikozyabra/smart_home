@@ -3,6 +3,7 @@
  */
 #include "command/Command.h"
 #include "device_management/DeviceManager.h"
+#include "devices/PropertyTags.h"
 #include "discovery/DiscoveryService.h"
 #include "discovery/SimulatedDiscoverySource.h"
 #include "drivers/SimulatedTemperatureSensorDriver.h"
@@ -290,11 +291,14 @@ class TemperatureFactory final : public IDeviceDriverFactory {
     std::unique_ptr<IDeviceDriver>
     create(const DeviceRecord &record) const override {
         const auto found = restored_.find(record.local_id);
-        return std::make_unique<SimulatedTemperatureSensorDriver>(
-            record.local_id, record.physical_id, record.name,
-            found == restored_.end()
-                ? 23.0
-                : property<double>(found->second, "temperature"));
+        auto driver = std::make_unique<SimulatedTemperatureSensorDriver>(
+            record.local_id, record.physical_id, record.name, 23.0);
+        // Saved temperatures predate the range on new measurements.
+        if (found != restored_.end())
+            driver->device().setProperty(
+                props::climate::Temperature.key,
+                property<double>(found->second, "temperature"));
+        return driver;
     }
 };
 

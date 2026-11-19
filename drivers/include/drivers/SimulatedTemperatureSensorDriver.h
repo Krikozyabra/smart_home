@@ -5,9 +5,8 @@
  * @brief Драйвер симулированного датчика температуры.
  */
 
-#include "drivers/DeviceDriverBase.h"
 #include "common/DeviceId.h"
-#include "descriptors/DeviceDescriptor.h"
+#include "drivers/DeviceDriverBase.h"
 
 #include <string>
 
@@ -18,28 +17,17 @@ namespace smart_home {
  * @brief Класс драйвера симулированного датчика температуры.
  */
 class SimulatedTemperatureSensorDriver final : public DeviceDriverBase {
-  private:
-    /**
-     * @brief Генерирует дескриптор устройства для симулированного датчика температуры.
-     * Первый параметр — идентификатор устройства (DeviceId).
-     * Второй параметр — физический идентификатор устройства (const std::string &).
-     * Третий параметр — имя устройства (const std::string &).
-     * @return Сформированный дескриптор устройства DeviceDescriptor.
-     */
-    static DeviceDescriptor generateDeviceDescriptor(DeviceId,
-                                                     const std::string &,
-                                                     const std::string &);
-
   public:
     /**
      * @brief Конструктор драйвера симулированного датчика температуры.
-     * Первый параметр — идентификатор устройства (DeviceId).
-     * Второй параметр — физический идентификатор устройства (std::string).
-     * Третий параметр — имя устройства (std::string).
-     * Четвертый параметр — начальное значение температуры (double).
+     * @param local_id Локальный идентификатор.
+     * @param physical_id Физический идентификатор.
+     * @param name Имя устройства.
+     * @param temperature Начальная температура в градусах Цельсия.
+     * @throws std::invalid_argument Если температура вне диапазона [-50, 100].
      */
-    SimulatedTemperatureSensorDriver(DeviceId, std::string, std::string,
-                                     double);
+    SimulatedTemperatureSensorDriver(DeviceId local_id, std::string physical_id,
+                                     std::string name, double temperature);
 };
 
 } // namespace smart_home

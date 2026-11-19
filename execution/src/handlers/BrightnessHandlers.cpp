@@ -3,7 +3,8 @@
 #include "command/Command.h"
 #include "command/Value.h"
 #include "devices/Device.h"
-#include "devices/interfaces/IBrightness.h"
+#include "devices/PropertyTags.h"
+#include "devices/views/BrightnessView.h"
 #include "execution/CommandDispatcher.h"
 
 #include <cstdint>
@@ -41,11 +42,10 @@ CommandDispatcher::executeBrightnessSet(Device &device,
             std::to_string(operation_metadata->max) + "]");
     }
 
-    auto *brightness_interface = dynamic_cast<IBrightness *>(&device);
-    if (brightness_interface == nullptr)
-        throw std::logic_error("Descriptor declares brightness.set, but device "
-                               "does not implement IBrightness");
-    brightness_interface->setBrightness(
+    if (!props::light::Brightness.validate(command_argument_value))
+        throw std::invalid_argument(
+            "brightness.set expects a value from 0 to 100");
+    device.view<BrightnessView>().setBrightness(
         static_cast<std::uint8_t>(command_argument_value));
     return std::nullopt;
 }
@@ -63,12 +63,8 @@ CommandDispatcher::executeBrightnessGet(Device &device,
         throw std::logic_error(
             "brightness.get descriptor must use IntegerMetadata");
 
-    const auto *brightness_interface =
-        dynamic_cast<const IBrightness *>(&device);
-    if (brightness_interface == nullptr)
-        throw std::logic_error("Descriptor declares brightness.get, but device "
-                               "does not implement IBrightness");
-    return Value{static_cast<int>(brightness_interface->getBrightness())};
+    const auto brightness = device.view<BrightnessView>().getBrightness();
+    return Value{static_cast<int>(brightness)};
 }
 
 } // namespace smart_home

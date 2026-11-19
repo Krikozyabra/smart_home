@@ -3,7 +3,7 @@
 #include "command/Command.h"
 #include "command/Value.h"
 #include "devices/Device.h"
-#include "devices/interfaces/IOnOff.h"
+#include "devices/views/OnOffView.h"
 #include "execution/CommandDispatcher.h"
 
 #include <optional>
@@ -30,11 +30,7 @@ CommandDispatcher::executeOnOffSet(Device &device,
         throw std::invalid_argument("on_off.set expects a boolean argument");
     const bool command_argument_value = std::get<bool>(command_argument);
 
-    auto *on_off_interface = dynamic_cast<IOnOff *>(&device);
-    if (on_off_interface == nullptr)
-        throw std::logic_error("Descriptor declares on_off.set, but device "
-                               "does not implement IOnOff");
-    on_off_interface->setOn(command_argument_value);
+    device.view<OnOffView>().setOn(command_argument_value);
     return std::nullopt;
 }
 
@@ -51,11 +47,7 @@ CommandDispatcher::executeOnOffGet(Device &device,
         throw std::logic_error(
             "on_off.get descriptor must use BooleanMetadata");
 
-    const auto *on_off_interface = dynamic_cast<const IOnOff *>(&device);
-    if (on_off_interface == nullptr)
-        throw std::logic_error("Descriptor declares on_off.get, but device "
-                               "does not implement IOnOff");
-    return Value{on_off_interface->isOn()};
+    return Value{device.view<OnOffView>().isOn()};
 }
 
 } // namespace smart_home

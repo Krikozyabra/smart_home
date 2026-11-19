@@ -1,12 +1,41 @@
 #include "TestUtil.h"
 #include "command/Value.h"
+#include "devices/PropertyTags.h"
 #include "devices/types/Color.h"
+#include "drivers/DeviceDriverBase.h"
 #include "drivers/SimulatedLightDriver.h"
 #include "drivers/SimulatedTemperatureSensorDriver.h"
 #include "execution/CommandDispatcher.h"
 
+#include <memory>
+#include <optional>
 #include <stdexcept>
 #include <variant>
+
+namespace {
+
+class WideBrightnessDriver final : public smart_home::DeviceDriverBase {
+  static smart_home::DeviceDescriptor makeDescriptor() {
+    using namespace smart_home;
+    const ParameterDescriptor range("brightness.parameter.integer",
+                                    "Brightness", ValueType::Integer,
+                                    IntegerMetadata{0, 300, "%"});
+    const OperationDescriptor write("brightness.set", "Set brightness",
+                                    OperationType::Write, {range}, std::nullopt);
+    return {2, "SIM-WIDE", "Wide brightness",
+            {CapabilityDescriptor("brightness", "Brightness", {write})}};
+  }
+
+public:
+  WideBrightnessDriver()
+      : DeviceDriverBase(
+            std::make_unique<smart_home::Device>(2, "Wide brightness"),
+            makeDescriptor()) {
+    device().set(smart_home::props::light::Brightness, 50);
+  }
+};
+
+} // namespace
 
 int main() {
   smart_home::DeviceRegistry registry;
@@ -177,5 +206,14 @@ int main() {
       [&] { command_dispatcher.execute(color_set_with_int); });
   expectException<std::invalid_argument>(
       [&] { command_dispatcher.execute(color_set_for_temperature_sensor); });
+
+  // 256 fits the custom descriptor's declared range but would wrap to 0.
+  registry.add(std::make_unique<WideBrightnessDriver>());
+  expectException<std::invalid_argument>([&] {
+    command_dispatcher.execute(smart_home::Command(2, "brightness.set", {256}));
+  });
+  require(registry.find(2)->device().get(smart_home::props::light::Brightness) ==
+              50,
+          "An out-of-range command must preserve brightness before narrowing");
   return 0;
 }

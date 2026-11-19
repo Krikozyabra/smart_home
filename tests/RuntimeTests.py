@@ -341,7 +341,7 @@ class Persistence(RuntimeCase):
             INSERT INTO runtime_values VALUES
                 (1, 'light', 1, 72, 10, 20, 30, NULL),
                 (2, 'light', 0, 41, 0, 128, 255, NULL),
-                (3, 'temperature_sensor', NULL, NULL, NULL, NULL, NULL, 29.125);
+                (3, 'temperature_sensor', NULL, NULL, NULL, NULL, NULL, 105.125);
         """)
         again = App(self)
         again.send('show 1\nshow 2\nshow 3\n')
@@ -351,14 +351,14 @@ class Persistence(RuntimeCase):
         again.expect('brightness = 41')
         again.expect('color = 0 128 255')
         again.expect('on_off = false')
-        again.expect(r'temperature = 29\.125')
+        again.expect(r'temperature = 105\.125')
         self.assertEqual(self.active_path(), old)
         again.finish()
         path, _, values = self.generation()
         self.assertNotEqual(path, old)
         self.assertEqual(values[1], {'brightness': 72, 'color': '10,20,30', 'on_off': 'true'})
         self.assertEqual(values[2], {'brightness': 41, 'color': '0,128,255', 'on_off': 'false'})
-        self.assertEqual(values[3], {'temperature': '29.125'})
+        self.assertEqual(values[3], {'temperature': '105.125'})
 
     def test_revision_overflow_rejects_mutation(self):
         app = App(self)

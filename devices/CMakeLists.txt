@@ -1,6 +1,4 @@
 add_library(smart_home_devices STATIC
-    src/TemperatureSensor.cpp
-    src/Light.cpp
     src/Device.cpp
 )
 
@@ -14,6 +12,6 @@ target_link_libraries(smart_home_devices PUBLIC
     SmartHome::Common
 )
 
-target_compile_features(smart_home_devices PRIVATE
+target_compile_features(smart_home_devices PUBLIC
     cxx_std_17
 )

@@ -3,7 +3,7 @@
 #include "command/Command.h"
 #include "command/Value.h"
 #include "devices/Device.h"
-#include "devices/interfaces/ITemperature.h"
+#include "devices/views/TemperatureView.h"
 #include "execution/CommandDispatcher.h"
 
 #include <optional>
@@ -25,13 +25,7 @@ CommandDispatcher::executeTemperatureGet(Device &device,
         throw std::logic_error(
             "temperature.get descriptor must use FloatMetadata");
 
-    const auto *temperature_interface =
-        dynamic_cast<const ITemperature *>(&device);
-    if (temperature_interface == nullptr)
-        throw std::logic_error(
-            "Descriptor declares temperature.get, but device "
-            "does not implement ITemperature");
-    return Value{temperature_interface->getTemperature()};
+    return Value{device.view<TemperatureView>().getTemperature()};
 }
 
 } // namespace smart_home

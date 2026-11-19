@@ -3,8 +3,8 @@
 #include "command/Command.h"
 #include "command/Value.h"
 #include "devices/Device.h"
-#include "devices/interfaces/IColor.h"
 #include "devices/types/Color.h"
+#include "devices/views/ColorView.h"
 #include "execution/CommandDispatcher.h"
 
 #include <optional>
@@ -33,11 +33,7 @@ CommandDispatcher::executeColorSet(Device &device,
         throw std::invalid_argument("color.set expects a color argument");
     const Color &command_argument_value = std::get<Color>(command_argument);
 
-    auto *color_interface = dynamic_cast<IColor *>(&device);
-    if (color_interface == nullptr)
-        throw std::logic_error("Descriptor declares color.set, but device "
-                               "does not implement IColor");
-    color_interface->setColor(command_argument_value);
+    device.view<ColorView>().setColor(command_argument_value);
     return std::nullopt;
 }
 
@@ -55,11 +51,7 @@ CommandDispatcher::executeColorGet(Device &device,
     if (operation_metadata->color_model != "RGB")
         throw std::logic_error("color.get supports only RGB");
 
-    const auto *color_interface = dynamic_cast<const IColor *>(&device);
-    if (color_interface == nullptr)
-        throw std::logic_error("Descriptor declares color.get, but device "
-                               "does not implement IColor");
-    return Value{color_interface->getColor()};
+    return Value{device.view<ColorView>().getColor()};
 }
 
 } // namespace smart_home

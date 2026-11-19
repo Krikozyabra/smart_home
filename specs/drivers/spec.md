@@ -43,7 +43,7 @@ ID: Drivers
 - `temperature`: `temperature.get() -> double`, свойство `props::climate::Temperature`
 - `humidity`: `humidity.get() -> double`, свойство `props::climate::Humidity`
 - `contact`: `contact.get() -> bool`, свойство `props::security::Contact`
-- `battery`: `battery.get() -> int`, свойство `props::power::Battery`
+- `battery`: `battery.get() -> int`, свойство `props::security::Battery`
 - `power`: `power.get() -> double`, свойство `props::power::PowerWatts`
 
 ## Ошибки и инварианты

@@ -1,7 +1,8 @@
 # Архитектурный дизайн: Рефакторинг модуля Devices
 
-Статус: проектируемый архитектурный дизайн универсального цифрового двойника устройства, типизированных меток свойств и невладеющих представлений возможностей.  
-Основание: [spec.md](spec.md), `AGENTS.md`, `specs/drivers/spec.md`, `specs/persistence/spec.md`, `specs/execution/spec.md`.  
+Статус: реализовано в `SmartHome::Devices`.
+
+Основание: [spec.md](spec.md), `AGENTS.md`, `specs/drivers/spec.md`, `specs/persistence/spec.md`.
 Целевая платформа — Linux, Raspberry Pi 4b 8/120 (SD-card), стандарт C++17, модульная библиотека `SmartHome::Devices`.
 
 ---
@@ -11,8 +12,8 @@
 ### 1.1. Проблемы существующей реализации
 1. **Жесткая иерархия классов (Rigid Inheritance)**:
    Классы `Light` и `TemperatureSensor` жестко наследуют комбинацию интерфейсов (`Device, public IOnOff, public IBrightness, public IColor`). Добавление новой возможности (например, датчика присутствия или регулятора цветовой температуры) требует создания нового класса-наследника с множественным наследованием.
-2. **Накладные расходы и хрупкость `dynamic_cast`**:
-   Обработчики команд в `execution/src/handlers/` вынуждены выполнять `dynamic_cast<IOnOff*>(&device)`. В среде C++ это требует RTTI, обхода дерева типов во время выполнения и строкового сравнения mangled-типов, что неэффективно на процессоре ARM Cortex-A72 (Raspberry Pi 4).
+2. **Проверка возможностей через `dynamic_cast`**:
+   Обработчики команд в `execution/src/handlers/` проверяли возможность по типу конкретного объекта, например через `dynamic_cast<IOnOff*>(&device)`. Состав интерфейсов определялся при компиляции класса устройства.
 3. **Сложность сериализации и персистентности**:
    Сохранение состояния устройства требовало ручного чтения каждого геттера конкретного подкласса. Невозможно обойти все параметры устройства динамически для записи в таблицу `device_properties` модуля `persistence`.
 4. **Невозможность поддержки динамических устройств (Zigbee2MQTT)**:
@@ -25,8 +26,9 @@
    Для исключения строковых ошибок опечаток и строгой статической типизации вводятся легковесные `constexpr`-метки `PropertyTag<T>`. Метка связывает строковый ключ (`"on_off.state"`), тип C++ (`bool`), допустимые границы (`min`/`max`) и единицу измерения (`unit`).
 3. **Невладеющие представления возможностей (Views)**:
    Вместо множественного наследования устройством интерфейсов `IOnOff`, `IBrightness`, `IColor`, `ITemperature`, создаются стековые невладеющие представления (`OnOffView`, `BrightnessView`, `ColorView`, `TemperatureView`). Представление оборачивает ссылку `Device&` и реализует соответствующий интерфейс возможностей, транслируя вызовы методов в типобезопасные `device.set()` и `device.get()`.
-4. **Бесшовная интеграция с `persistence` и `drivers`**:
-   `Device::getProperties()` предоставляет полный снимок параметров для транзакционного сохранения через `DeviceStateStore::storeProperties`, а восстановление состояния выполняется простым наполнением словаря `Device::setProperty()`.
+4. **Интеграция с `persistence` и `drivers`**:
+   `Device::getProperties()` предоставляет ссылку на словарь, из которого вызывающий код может собрать снимок. `Device::setProperty()` позволяет восстановить значения после проверки формата сохранения. Runtime использует прежние ключи в SQLite, в том числе `temperature` для `temperature.celsius`.
+   Драйверы берут из `CapabilityCatalog` типизированную метку для начального значения и операции для дескриптора устройства.
 
 ---
 
@@ -55,8 +57,6 @@ devices/
       TemperatureView.h       # Представление ITemperature над const Device&
   src/
     Device.cpp                # Реализация базовых методов Device
-    types/
-      Color.cpp               # Утилиты работы с цветом и строковое представление
 ```
 
 ### 2.2. Архитектурная диаграмма классов (Mermaid)
@@ -105,7 +105,7 @@ classDiagram
             +getProperty(string) optional~Value~
             +hasProperty(string) bool
             +removeProperty(string) bool
-            +getProperties() unordered_map~string, Value~
+            +getProperties() const unordered_map~string, Value~&
             +set~T~(PropertyTag~T~, T) void
             +get~T~(PropertyTag~T~) optional~T~
             +has~T~(PropertyTag~T~) bool
@@ -223,15 +223,12 @@ struct PropertyTag {
         : key(k), unit(u), has_min(true), min_value(min_v), has_max(true), max_value(max_v) {}
 
     constexpr bool validate(const T &val) const noexcept {
-        if (has_min && val < min_value)
-            return false;
-        if (has_max && val > max_value)
-            return false;
-        return true;
+        return (!has_min || min_value <= val) &&
+               (!has_max || val <= max_value);
     }
 };
 
-// Специализация для std::string (литеральный тип в C++17)
+// Литеральная метка для std::string в C++17
 template <>
 struct PropertyTag<std::string> {
     using Type = std::string;
@@ -242,7 +239,7 @@ struct PropertyTag<std::string> {
     constexpr explicit PropertyTag(const char *k, const char *u = "") noexcept
         : key(k), unit(u) {}
 
-    bool validate(const std::string &) const noexcept { return true; }
+    constexpr bool validate(const std::string &) const noexcept { return true; }
 };
 
 // Специализация для Color (нет понятия min/max диапазона)
@@ -256,7 +253,7 @@ struct PropertyTag<Color> {
     constexpr explicit PropertyTag(const char *k, const char *u = "") noexcept
         : key(k), unit(u) {}
 
-    bool validate(const Color &) const noexcept { return true; }
+    constexpr bool validate(const Color &) const noexcept { return true; }
 };
 
 } // namespace smart_home
@@ -314,7 +311,7 @@ namespace power {
     - `set(const PropertyTag<T> &tag, const T &value)`: вызывает `tag.validate(value)`, при выходе за пределы выбрасывает `std::invalid_argument` без модификации словаря (**Strong Exception Guarantee**).
     - `get(const PropertyTag<T> &tag) const -> std::optional<T>`: возвращает `std::nullopt`, если ключа нет или тип в `Value` не совпадает с `T`.
     - `has(const PropertyTag<T> &tag) const -> bool`.
-    - `view<ViewType>()` и `view<ViewType>() const`.
+    - `view<ViewType>() &` и `view<ViewType>() const &` создают представления из ссылок на устройства. Вызов на временном устройстве запрещён.
 
 ### 3.5. Непередающие владение представления (Views)
 Представления конструируются на стеке над ссылкой `Device&` и проецируют интерфейсы возможностей:
@@ -349,8 +346,8 @@ public:
 
     std::uint8_t getBrightness() const override {
         auto val = device_.get(props::light::Brightness);
-        if (!val.has_value())
-            throw std::logic_error("Device does not possess 'brightness.level' property");
+        if (!val || *val < 0 || *val > std::numeric_limits<std::uint8_t>::max())
+            throw std::logic_error("Missing or invalid 'brightness.level' property");
         return static_cast<std::uint8_t>(*val);
     }
 
@@ -440,15 +437,14 @@ sequenceDiagram
 
 ## 5. Анализ ресурсов и памяти на Raspberry Pi 4b
 
-1. **Размер объектов в оперативной памяти (ARMv8 64-bit)**:
-   - `sizeof(Value)` = 40 байт (наибольший тип `std::string` 32 байта + 1 байт дискриминатор + выравнивание до 8 байт).
-   - `sizeof(Device)` = 8 байт (`DeviceId`) + 32 байта (`std::string name`) + 56 байт (`std::unordered_map`) = **96 байт**.
-   - `sizeof(OnOffView)` = **8 байт** (одна ссылка `Device&`). Представление размещается исключительно на стеке функции обработки команды и имеет нулевой оверхед по динамической памяти.
+1. **Размер объектов в оперативной памяти**:
+   - Размер `Value` зависит от размера наибольшего типа и хранения индекса варианта.
+   - `Device` хранит идентификатор, строку имени и словарь. Размер динамической памяти зависит от числа свойств, длины ключей и строковых значений.
+   - Представление хранит одну ссылку на устройство. Полиморфный интерфейс добавляет служебные данные, размер которых зависит от ABI. Создание представления обходится без динамической аллокации.
 2. **Исключение `dynamic_cast`**:
-   - Старая схема: `dynamic_cast<IOnOff*>(&device)` вызывала рантайм-поиск в RTTI с блокировками типов и накладными расходами CPU.
-   - Новая схема: создание `OnOffView(device)` не содержит виртуальных таблиц приведения и компилируется в прямые инлайн-вызовы методов `Device::set`.
+   - Диспетчер проверяет поддержку операции по дескриптору. Обработчик создаёт представление нужного типа и обращается к свойству по типизированной метке.
 3. **Хранение `PropertyTag`**:
-   - Все стандартные теги `props::*` объявлены как `inline constexpr` и размещаются компоновщиком в секции констант `.rodata` исполняемого файла, занимая суммарно менее 1 КБ памяти без аллокаций в куче.
+   - Стандартные метки `props::*` объявлены как `inline constexpr`. Ключи и единицы измерения заданы строковыми литералами, создание меток обходится без аллокаций.
 
 ---
 
@@ -456,10 +452,9 @@ sequenceDiagram
 
 | Метод | Условие сбоя | Тип исключения | Состояние объекта после сбоя |
 |---|---|---|---|
-| `setProperty(key, val)` | `key.empty()` | `std::invalid_argument` | Не изменяется (Basic Guarantee) |
-| `getProperty(key)` | `key.empty()` | `std::invalid_argument` | Не изменяется (No-throw read) |
+| Прямые операции по ключу | `key.empty()` | `std::invalid_argument` | Сохраняется |
 | `set(tag, value)` | Выход за пределы `[min; max]` | `std::invalid_argument` | **Строгая гарантия (Strong Guarantee)**: словарь не изменяется |
-| `get(tag)` | Свойство отсутствует или тип не совпадает | Нет исключений (`noexcept` логика) | Возвращает `std::nullopt` |
-| `View::get*()` | Свойство отсутствует в `Device` | `std::logic_error` | Не изменяется |
+| `get(tag)` | Свойство отсутствует или тип не совпадает | Возвращает `std::nullopt` | Сохраняется |
+| `View::get*()` | Свойство отсутствует, имеет другой тип или яркость не помещается в `uint8_t` | `std::logic_error` | Сохраняется |
 | `View::set*()` | Нарушение диапазона | `std::invalid_argument` | Прежнее состояние сохраняется |
 | `setName(name)` | `name.empty()` | `std::invalid_argument` | Прежнее имя сохраняется |
