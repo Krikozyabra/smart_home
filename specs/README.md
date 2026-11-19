@@ -14,6 +14,7 @@
 | Регистрация и восстановление устройств | [Описание](device_management/spec.md) | `device_management` |
 | Представление устройств и свойств | [Описание](devices/spec.md) | `devices` |
 | Драйверы и протоколы | [Описание](drivers/spec.md) | `drivers` |
+| Персистентность и поколения | [Описание](persistence/spec.md) | `persistence` |
 | Основной цикл программы | [Описание](runtime/) | `runtime` |
 
 ## Формат спецификаций
