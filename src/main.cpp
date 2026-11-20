@@ -15,6 +15,12 @@
 #include "persistence/PersistenceConfig.h"
 #include "persistence/SaveWorker.h"
 #include "persistence/StateLock.h"
+#include "platform/DescriptorFlags.h"
+#include "platform/DescriptorIO.h"
+#include "platform/EventPipe.h"
+#include "platform/Poller.h"
+#include "platform/SignalHandler.h"
+#include "platform/TemporaryDirectory.h"
 #include "registry/DriverFactoryRegistry.h"
 #include "storage/SQLiteDeviceStorage.h"
 
@@ -22,18 +28,10 @@
 #include "Testing.h"
 #endif
 
-#include <fcntl.h>
-#include <poll.h>
-#include <signal.h>
-#include <unistd.h>
-
 #include <algorithm>
 #include <array>
-#include <atomic>
-#include <cerrno>
 #include <charconv>
 #include <cstdlib>
-#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <limits>
@@ -55,102 +53,6 @@ namespace persist = smart_home::persistence;
 using Ontology = ontology::LadybugOntologyStorage;
 using persist::DevicePropertiesMap;
 using persist::Revision;
-
-[[noreturn]] void systemError(const char *operation) {
-    throw std::runtime_error(std::string(operation) + ": " +
-                             std::strerror(errno));
-}
-
-class Fd {
-    int value_ = -1;
-
-  public:
-    explicit Fd(int value = -1) : value_(value) {}
-    ~Fd() {
-        if (value_ >= 0)
-            ::close(value_);
-    }
-    Fd(const Fd &) = delete;
-    Fd &operator=(const Fd &) = delete;
-    int get() const { return value_; }
-};
-
-class SignalPipe {
-    Fd reader_, writer_;
-    static std::array<int, 2> openPipe() {
-        std::array<int, 2> fds{};
-        if (::pipe2(fds.data(), O_NONBLOCK | O_CLOEXEC) != 0)
-            systemError("pipe2");
-        return fds;
-    }
-    explicit SignalPipe(std::array<int, 2> fds)
-        : reader_(fds[0]), writer_(fds[1]) {}
-
-  public:
-    SignalPipe() : SignalPipe(openPipe()) {}
-    int reader() const { return reader_.get(); }
-    int writer() const { return writer_.get(); }
-    void drain() const {
-        char bytes[128];
-        while (::read(reader(), bytes, sizeof(bytes)) > 0) {
-        }
-    }
-};
-
-static_assert(std::atomic<bool>::is_always_lock_free &&
-                  std::atomic<int>::is_always_lock_free,
-              "Signal notification requires lock-free atomics.");
-std::atomic<bool> stop_requested{false};
-std::atomic<int> signal_writer{-1};
-extern "C" void requestStop(int) {
-    const int saved_errno = errno;
-    stop_requested = 1;
-    const char byte = 1;
-    const int writer = signal_writer.load(std::memory_order_relaxed);
-    if (writer >= 0) {
-        const auto ignored = ::write(writer, &byte, 1);
-        (void)ignored;
-    }
-    errno = saved_errno;
-}
-
-class Signals {
-    struct sigaction old_int_{}, old_term_{};
-
-  public:
-    explicit Signals(const SignalPipe &pipe) {
-        stop_requested = 0;
-        signal_writer = pipe.writer();
-        struct sigaction action{};
-        action.sa_handler = requestStop;
-        sigemptyset(&action.sa_mask);
-        if (sigaction(SIGINT, &action, &old_int_) != 0) {
-            signal_writer = -1;
-            systemError("sigaction");
-        }
-        if (sigaction(SIGTERM, &action, &old_term_) != 0) {
-            sigaction(SIGINT, &old_int_, nullptr);
-            signal_writer = -1;
-            systemError("sigaction");
-        }
-    }
-    ~Signals() {
-        sigaction(SIGINT, &old_int_, nullptr);
-        sigaction(SIGTERM, &old_term_, nullptr);
-        signal_writer = -1;
-    }
-};
-
-class StdinFlags {
-    int old_;
-
-  public:
-    StdinFlags() : old_(fcntl(STDIN_FILENO, F_GETFL)) {
-        if (old_ < 0 || fcntl(STDIN_FILENO, F_SETFL, old_ | O_NONBLOCK) < 0)
-            systemError("stdin flags");
-    }
-    ~StdinFlags() { fcntl(STDIN_FILENO, F_SETFL, old_); }
-};
 
 template <class T> T integer(const std::string &text) {
     T result{};
@@ -213,27 +115,6 @@ arguments(int argc, char *argv[],
     persist::validateConfig(config);
     return config;
 }
-
-// mkdtemp owns private files even when construction of a later service fails.
-class Directory {
-  public:
-    fs::path path;
-    bool preserve = false;
-    Directory(const fs::path &base, const std::string &prefix) {
-        auto pattern = (base / (prefix + "XXXXXX")).string();
-        if (!::mkdtemp(pattern.data()))
-            systemError("mkdtemp");
-        path = pattern;
-    }
-    ~Directory() {
-        if (!preserve) {
-            std::error_code error;
-            fs::remove_all(path, error);
-        }
-    }
-    Directory(const Directory &) = delete;
-    Directory &operator=(const Directory &) = delete;
-};
 
 IDeviceDriver &requireDriver(DeviceRegistry &registry, DeviceId id) {
     auto *driver = registry.find(id);
@@ -454,15 +335,16 @@ std::vector<Value> commandArguments(const std::string &operation,
 }
 
 int run(const persist::PersistenceConfig &config) {
-    SignalPipe signal_events;
-    Signals signals(signal_events);
+    platform::EventPipe signal_events;
+    platform::SignalHandler signals(signal_events);
     persist::StateLock state_lock(config.state_dir);
     const auto saved =
         persist::GenerationManager(state_lock).resolveCommitted();
     persist::requireRamDirectory(config.ram_dir);
-    Directory workspace(config.ram_dir, "smart-home-runtime-");
-    const auto inventory_path = workspace.path / "state.sqlite";
-    const auto graph_path = workspace.path / "ontology.lbdb";
+    platform::TemporaryDirectory workspace(config.ram_dir,
+                                           "smart-home-runtime-");
+    const auto inventory_path = workspace.path() / "state.sqlite";
+    const auto graph_path = workspace.path() / "ontology.lbdb";
     if (saved) {
         fs::copy_file(saved->path / "state.sqlite", inventory_path);
         fs::copy_file(saved->path / "ontology.lbdb", graph_path);
@@ -479,7 +361,7 @@ int run(const persist::PersistenceConfig &config) {
     factories.add("simulated", createSimulatedDriver);
     ontology::OntologyConfig graph_config;
     graph_config.database_path = graph_path;
-    graph_config.ram_workspace_base = workspace.path;
+    graph_config.ram_workspace_base = workspace.path();
     graph_config.allow_disk_fallback = false;
     Ontology graph(graph_config);
     // Preserve committed graph contents for validation before accepting
@@ -505,11 +387,18 @@ int run(const persist::PersistenceConfig &config) {
             {"SIM-TEMP-001", "simulated", "TemperatureSensor in bath", {"temperature"}}},
         false));
     DiscoveryService discovery(manager, std::move(sources));
-    StdinFlags stdin_flags;
+    constexpr int input_fd = platform::standardInputFd;
+    platform::NonBlockingScope stdin_flags(input_fd);
     persist::SaveWorker worker(state_lock, config.capacity);
+    platform::Poller events;
+    events.add(input_fd, platform::PollEvent::Read);
+    events.add(worker.eventFd(), platform::PollEvent::Read);
+    events.add(signals.eventFd(), platform::PollEvent::Read);
+    platform::Poller save_events;
+    save_events.add(worker.eventFd(), platform::PollEvent::Read);
     // All startup resources are ready. Keep live RAM state if runtime
     // completion fails.
-    workspace.preserve = true;
+    workspace.preserve();
     Revision revision = saved ? saved->revision : 0;
     Revision confirmed = revision;
     bool unsaved = initialized;
@@ -541,7 +430,7 @@ int run(const persist::PersistenceConfig &config) {
     const auto prepare = [&](persist::Reservation &reservation) {
         try {
             validateGraph(graph, storage, registry, snapshotGraph(graph));
-            persist::Snapshot snapshot(workspace.path, revision);
+            persist::Snapshot snapshot(workspace.path(), revision);
             database.storeProperties(capture(storage, registry), revision);
             database.backupTo(snapshot.directory() / "state.sqlite");
             graph.dumpToFile((snapshot.directory() / "ontology.lbdb").string());
@@ -752,7 +641,7 @@ int run(const persist::PersistenceConfig &config) {
     bool first_iteration = true;
     std::string pending;
     bool eof = false, discard = false;
-    while (!exiting && !stop_requested) {
+    while (!exiting && !signals.isStopRequested()) {
         collect();
         if (first_iteration) {
             first_iteration = false;
@@ -776,42 +665,38 @@ int run(const persist::PersistenceConfig &config) {
             break;
         }
         std::cout.flush();
-        pollfd fds[] = {{STDIN_FILENO, POLLIN, 0},
-                        {worker.eventFd(), POLLIN, 0},
-                        {signal_events.reader(), POLLIN, 0}};
-        const int result = ::poll(fds, 3, -1);
-        if (result < 0) {
-            if (errno == EINTR)
-                continue;
-            systemError("poll");
-        }
-        if (fds[2].revents)
-            signal_events.drain();
-        if (fds[0].revents & POLLNVAL)
+        events.poll();
+        if (events.isReadable(signals.eventFd()))
+            signals.drain();
+        if (signals.isStopRequested())
+            break;
+        if (events.isInvalid(input_fd))
             throw std::runtime_error("stdin unavailable.");
-        if (fds[0].revents & (POLLIN | POLLHUP | POLLERR)) {
+        if (events.isReadable(input_fd) || events.isHangUp(input_fd) ||
+            events.hasError(input_fd)) {
             char bytes[4096];
-            const auto size = ::read(STDIN_FILENO, bytes, sizeof(bytes));
-            if (size == 0)
+            const auto size =
+                platform::readNonBlocking(input_fd, bytes, sizeof(bytes));
+            if (!size)
+                continue;
+            if (*size == 0) {
                 eof = true;
-            else if (size < 0) {
-                if (errno != EAGAIN && errno != EINTR)
-                    systemError("read stdin");
-            } else
-                for (ssize_t i = 0; i < size; ++i) {
-                    if (discard) {
-                        if (bytes[i] == '\n')
-                            discard = false;
-                        continue;
-                    }
-                    pending.push_back(bytes[i]);
-                    if (pending.size() > 65536 &&
-                        pending.find('\n') == std::string::npos) {
-                        pending.clear();
-                        discard = true;
-                        std::cout << "Error: input line too long.\n";
-                    }
+                continue;
+            }
+            for (std::size_t i = 0; i < *size; ++i) {
+                if (discard) {
+                    if (bytes[i] == '\n')
+                        discard = false;
+                    continue;
                 }
+                pending.push_back(bytes[i]);
+                if (pending.size() > 65536 &&
+                    pending.find('\n') == std::string::npos) {
+                    pending.clear();
+                    discard = true;
+                    std::cout << "Error: input line too long.\n";
+                }
+            }
         }
     }
     std::cout << "Stopping; final save pending.\n" << std::flush;
@@ -823,9 +708,7 @@ int run(const persist::PersistenceConfig &config) {
             final_queued = prepare(reservation);
             break;
         }
-        pollfd event{worker.eventFd(), POLLIN, 0};
-        if (::poll(&event, 1, -1) < 0 && errno != EINTR)
-            systemError("poll final save");
+        save_events.poll();
     }
     worker.stop();
     collect();
@@ -838,10 +721,10 @@ int run(const persist::PersistenceConfig &config) {
     }
     const bool success = final_queued && last_save_success &&
                          confirmed == revision && !unsaved && closed;
-    workspace.preserve = !success;
+    workspace.setPreserve(!success);
     if (!success)
         std::cerr << "Final save failed; recoverable RAM files retained at "
-                  << workspace.path << '\n';
+                  << workspace.path() << '\n';
     return success ? 0 : 1;
 }
 } // namespace

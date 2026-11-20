@@ -111,7 +111,8 @@ bathroom temperature_sensor temperature.get
 ## Границы
 
 - Текущий этап объединяет devices, descriptors, drivers, registry, command,
-  execution, storage, device_management, discovery, ontology, persistence и logging.
+  execution, storage, device_management, discovery, ontology, persistence, logging
+  и [platform](../platform/spec.md).
 - MQTT, audio, OWW и обработка текста пока не подключаются. Требование
   к будущим длительным задачам не означает реализацию ИИ на этом этапе.
 - Реактор и композиция находятся в `src/main.cpp`. Формат поколений,
