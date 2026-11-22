@@ -1,5 +1,47 @@
 # smart_home
 
+Локальный модульный runtime-движок для управления умным домом на **C++17/20** под Linux / Raspberry Pi. Система работает полностью автономно без облачных зависимостей: захватывает звук с микрофона, локально распознаёт ключевое слово («Нафаня»), управляет устройствами по MQTT / Zigbee2MQTT, хранит семантическую карту дома в графовой БД и обеспечивает отказоустойчивое сохранение состояния.
+
+Проект разрабатывается по методологии **Spec-Driven Development (SDD)** (формальные контракты в `specs/`) с покрытием unit- и интеграционными тестами.
+
+## Архитектура и ключевые модули
+
+```text
++-----------------------------------------------------------------------+
+
+|                        Smart Home Runtime (RAM)                       |
+|                                                                       |
+|  [ALSA Audio] ---> [ONNX Wake Word ("Нафаня")]                        |
+|   (ring buffer)            |                                          |
+|                            v                                          |
+|                   [Command & Execution] <---> [MQTT / Zigbee2MQTT]    |
+|                            |                                          |
+|                            v                                          |
+|          [Device Manager & Capability Drivers]                        |
+|              |                           |                            |
+|              v                           v                            |
+|   [LadybugDB Ontology]          [SQLite Inventory]                    |
+|   (графовые связи дома)         (устройства и свойства)               |
+|              |                           |                            |
+|              +-------------+-------------+                            |
+|                            v                                          |
+|      [Atomic Snapshot Persistence (/dev/shm -> Disk)]                 |
+|              (fsync, atomic rename, flock, SHA-256)                   |
++-----------------------------------------------------------------------+
+```
+
+* **`audio` & `oww`** — неблокирующий захват PCM-аудио через Linux ALSA в кольцевой буфер и локальный инференс модели OpenWakeWord через **ONNX Runtime C++ SDK** (без Python).
+* **`mqtt` & `drivers`** — асинхронный MQTT-клиент поверх `libmosquittopp` (QoS 0/1/2, TLS, автопереподключение) и адаптер для устройств **Zigbee2MQTT**.
+* **`ontology`** — графовая модель помещений, устройств и их возможностей на базе **LadybugDB** (Cypher-запросы, транзакционное переназначение, межпроцессная блокировка `.lock`).
+* **`storage` & `persistence`** — работа с горячим состоянием в RAM (`/dev/shm`) и фоновая атомарная публикация поколений снимков на диск через SQLite Backup API (`fsync`, `rename`, проверка целостности по `SHA-256`).
+* **`logging` & `tests`** — потокобезопасное логирование (`spdlog`) и набор изолированных unit- и интеграционных тестов на **CTest** (с проверкой отказов и моками без физического оборудования).
+
+## Стек технологий
+* **Языки:** C++17 (публичный API и runtime), C++20 (реализация онтологии)
+* **Системное ПО:** Linux (POSIX, ALSA, `/dev/shm`), `spdlog`
+* **БД и ML:** ONNX Runtime C++ SDK, SQLite3, LadybugDB, Mosquitto (`libmosquittopp`), `json-c`
+* **Сборка и качество:** CMake, CTest, Doxygen, `clang-format`
+
 # Building
 prebuild
 `cmake -B build -S . -DCMAKE_EXPORT_COMPILE_COMMANDS=TRUE`
