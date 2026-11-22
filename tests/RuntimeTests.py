@@ -262,6 +262,13 @@ class Console(RuntimeCase):
         _, _, values = self.generation()
         self.assertEqual(values[1]['brightness'], 61)
 
+    def test_exit_skips_buffered_commands(self):
+        app = App(self)
+        app.initial_save()
+        app.finish('exit\n1 brightness.set 99\n')
+        _, _, values = self.generation()
+        self.assertEqual(values[1]['brightness'], 50)
+
 
 class Persistence(RuntimeCase):
     def test_crash_at_each_commit_boundary(self):

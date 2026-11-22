@@ -64,9 +64,29 @@ void explicitDestinations() {
         require(!fs::exists(fixture.config.database_path), "no initial snapshot without dump_path");
         seed(storage);
         IOntologyStorage& graph = storage;
+        const auto rooms = graph.getAllRooms();
+        const auto devices = graph.getAllDevices();
+        const auto abilities = graph.getAllAbilities();
+        std::vector<DeviceOntologyDetails> deviceDetails;
+        for (const auto& device : devices)
+            deviceDetails.push_back(graph.getDeviceDetails(device.id).value());
+
         graph.dumpToFile(first.string());
         graph.dumpToFile(second.string()); // No intervening mutation: both destinations must be written.
-        require(bytes(first) == bytes(second), "unchanged graph dumps to independent destinations");
+        for (const auto& destination : {first, second}) {
+            const auto label = "explicit snapshot " + destination.filename().string();
+            require(fs::is_regular_file(destination), label + " was written");
+            auto config = fixture.config;
+            config.database_path = destination.string();
+            LadybugOntologyStorage restored(config);
+            require(restored.getAllRooms() == rooms, label + " restores rooms");
+            require(restored.getAllDevices() == devices, label + " restores devices");
+            require(restored.getAllAbilities() == abilities, label + " restores abilities");
+            for (const auto& details : deviceDetails)
+                require(restored.getDeviceDetails(details.device.id) == details,
+                        label + " restores device relationships");
+            restored.close();
+        }
         before = bytes(first);
         graph.addRoom({"later", "Later"});
         expectException<std::invalid_argument>([&] { graph.dumpToFile(""); });

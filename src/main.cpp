@@ -1,12 +1,15 @@
 /** @file main.cpp
  * @brief Композиция приложения, консольный цикл и фиксация полных поколений.
  */
+#include "ConsoleInput.h"
 #include "command/Command.h"
 #include "device_management/DeviceManager.h"
 #include "discovery/DiscoveryService.h"
 #include "discovery/SimulatedDiscoverySource.h"
 #include "drivers/CapabilityCatalog.h"
 #include "drivers/DeviceCreator.h"
+#include "events/EventBus.h"
+#include "events/Reactor.h"
 #include "execution/CommandDispatcher.h"
 #include "logging/Logging.h"
 #include "ontology/LadybugOntologyStorage.h"
@@ -28,11 +31,18 @@
 #include "Testing.h"
 #endif
 
+#include <fcntl.h>
+#include <signal.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <array>
 #include <charconv>
 #include <cstdlib>
+#include <cstring>
+#include <exception>
 #include <filesystem>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <map>
@@ -47,12 +57,106 @@
 
 namespace {
 using namespace smart_home;
+namespace ev = smart_home::events;
 namespace fs = std::filesystem;
 namespace log = smart_home::logging;
 namespace persist = smart_home::persistence;
 using Ontology = ontology::LadybugOntologyStorage;
 using persist::DevicePropertiesMap;
 using persist::Revision;
+
+struct ConsoleCommandEvent {
+    std::string line;
+};
+
+struct StopRequestedEvent {};
+
+[[noreturn]] void systemError(const char *operation) {
+    throw std::runtime_error(std::string(operation) + ": " +
+                             std::strerror(errno));
+}
+
+class Fd {
+    int value_ = -1;
+
+  public:
+    explicit Fd(int value = -1) : value_(value) {}
+    ~Fd() {
+        if (value_ >= 0)
+            ::close(value_);
+    }
+    Fd(const Fd &) = delete;
+    Fd &operator=(const Fd &) = delete;
+    int get() const { return value_; }
+};
+
+class SignalPipe {
+    Fd reader_, writer_;
+    static std::array<int, 2> openPipe() {
+        std::array<int, 2> fds{};
+        if (::pipe2(fds.data(), O_NONBLOCK | O_CLOEXEC) != 0)
+            systemError("pipe2");
+        return fds;
+    }
+    explicit SignalPipe(std::array<int, 2> fds)
+        : reader_(fds[0]), writer_(fds[1]) {}
+
+  public:
+    SignalPipe() : SignalPipe(openPipe()) {}
+    int reader() const { return reader_.get(); }
+    int writer() const { return writer_.get(); }
+    void drain() const {
+        char bytes[128];
+        while (::read(reader(), bytes, sizeof(bytes)) > 0) {
+        }
+    }
+};
+
+static_assert(std::atomic<bool>::is_always_lock_free &&
+                  std::atomic<int>::is_always_lock_free,
+              "Signal notification requires lock-free atomics.");
+std::atomic<bool> stop_requested{false};
+std::atomic<int> signal_writer{-1};
+extern "C" void requestStop(int) {
+    const int saved_errno = errno;
+    stop_requested = 1;
+    const char byte = 1;
+    const int writer = signal_writer.load(std::memory_order_relaxed);
+    if (writer >= 0) {
+        ssize_t result;
+        do {
+            result = ::write(writer, &byte, 1);
+        } while (result < 0 && errno == EINTR);
+    }
+    errno = saved_errno;
+}
+
+class Signals {
+    struct sigaction old_int_{}, old_term_{};
+
+  public:
+    explicit Signals(const SignalPipe &pipe) {
+        stop_requested = 0;
+        signal_writer = pipe.writer();
+        struct sigaction action{};
+        action.sa_handler = requestStop;
+        sigemptyset(&action.sa_mask);
+        if (sigaction(SIGINT, &action, &old_int_) != 0) {
+            signal_writer = -1;
+            systemError("sigaction");
+        }
+        if (sigaction(SIGTERM, &action, &old_term_) != 0) {
+            sigaction(SIGINT, &old_int_, nullptr);
+            signal_writer = -1;
+            systemError("sigaction");
+        }
+    }
+    ~Signals() {
+        sigaction(SIGINT, &old_int_, nullptr);
+        sigaction(SIGTERM, &old_term_, nullptr);
+        signal_writer = -1;
+    }
+};
 
 template <class T> T integer(const std::string &text) {
     T result{};
@@ -387,15 +491,18 @@ int run(const persist::PersistenceConfig &config) {
             {"SIM-TEMP-001", "simulated", "TemperatureSensor in bath", {"temperature"}}},
         false));
     DiscoveryService discovery(manager, std::move(sources));
-    constexpr int input_fd = platform::standardInputFd;
-    platform::NonBlockingScope stdin_flags(input_fd);
+    runtime::ConsoleInput console(STDIN_FILENO);
     persist::SaveWorker worker(state_lock, config.capacity);
-    platform::Poller events;
-    events.add(input_fd, platform::PollEvent::Read);
-    events.add(worker.eventFd(), platform::PollEvent::Read);
-    events.add(signals.eventFd(), platform::PollEvent::Read);
-    platform::Poller save_events;
-    save_events.add(worker.eventFd(), platform::PollEvent::Read);
+    ev::EventBus bus;
+    std::exception_ptr reactor_error;
+    ev::Reactor reactor([&](std::exception_ptr error) {
+        reactor_error = std::move(error);
+        reactor.stop();
+    });
+    const auto checkReactor = [&] {
+        if (reactor_error)
+            std::rethrow_exception(reactor_error);
+    };
     // All startup resources are ready. Keep live RAM state if runtime
     // completion fails.
     workspace.preserve();
@@ -409,8 +516,8 @@ int run(const persist::PersistenceConfig &config) {
     };
     if (initialized)
         markChanged(persist::nextRevision(revision));
-    const auto collect = [&] {
-        for (const auto &result : worker.collectResults()) {
+    const auto save_subscription = bus.subscribe<persist::SaveResult>(
+        [&](const persist::SaveResult &result) {
             last_save_success = result.success;
             if (result.success) {
                 confirmed = std::max(confirmed, result.revision);
@@ -425,7 +532,11 @@ int run(const persist::PersistenceConfig &config) {
                 log::log(log::Level::Error, "Runtime",
                          "Generation commit failed; RAM state retained.");
             }
-        }
+        });
+    const auto collect = [&] {
+        for (const auto &result : worker.collectResults())
+            bus.publish(result);
+        std::cout.flush();
     };
     const auto prepare = [&](persist::Reservation &reservation) {
         try {
@@ -501,6 +612,11 @@ int run(const persist::PersistenceConfig &config) {
         }
     };
     bool exiting = false;
+    const auto stop_subscription = bus.subscribe<StopRequestedEvent>(
+        [&](const StopRequestedEvent &) {
+            exiting = true;
+            reactor.stop();
+        });
     const auto command = [&](const std::string &line) {
         std::istringstream input(line);
         std::vector<std::string> words;
@@ -521,7 +637,7 @@ int run(const persist::PersistenceConfig &config) {
                 return;
             }
             if (words[0] == "exit" && words.size() == 1) {
-                exiting = true;
+                bus.publish(StopRequestedEvent{});
                 return;
             }
             if (words[0] == "list" && words.size() == 1) {
@@ -637,68 +753,63 @@ int run(const persist::PersistenceConfig &config) {
             log::log(log::Level::Warn, "Runtime", "Console command rejected.");
         }
     };
-    std::cout << "Runtime ready. Type help.\n" << std::flush;
-    bool first_iteration = true;
-    std::string pending;
-    bool eof = false, discard = false;
-    while (!exiting && !signals.isStopRequested()) {
-        collect();
-        if (first_iteration) {
-            first_iteration = false;
-            scan();
-            continue;
-        }
-        const auto newline = pending.find('\n');
-        if (newline != std::string::npos) {
-            const auto line = pending.substr(0, newline);
-            pending.erase(0, newline + 1);
-            if (line.size() > 65536)
-                std::cout << "Error: input line too long.\n";
-            else
-                command(line);
+    const auto command_subscription = bus.subscribe<ConsoleCommandEvent>(
+        [&](const ConsoleCommandEvent &event) {
+            command(event.line);
             std::cout.flush();
-            continue;
+        });
+
+    bool input_queued = false;
+    const std::function<void()> read_console = [&] {
+        input_queued = false;
+        if (exiting || stop_requested)
+            return;
+        auto input = console.next();
+        if (stop_requested)
+            return;
+        using Status = runtime::ConsoleInput::Status;
+        if (input.status == Status::Line || (input.status == Status::End && !input.line.empty()))
+            bus.publish(ConsoleCommandEvent{std::move(input.line)});
+        if (input.status == Status::TooLong)
+            std::cout << "Error: input line too long.\n" << std::flush;
+        if (input.status == Status::End && !exiting)
+            bus.publish(StopRequestedEvent{});
+        if (!exiting && console.hasBufferedInput()) {
+            reactor.post(read_console);
+            input_queued = true;
         }
-        if (eof) {
-            if (!pending.empty())
-                command(pending);
-            break;
-        }
-        std::cout.flush();
-        events.poll();
-        if (events.isReadable(signals.eventFd()))
-            signals.drain();
-        if (signals.isStopRequested())
-            break;
-        if (events.isInvalid(input_fd))
+    };
+
+    reactor.addHandler(signal_events.reader(), ev::IoEvent::Read, [&](int, ev::IoEvent ready) {
+        if ((ready & (ev::IoEvent::Error | ev::IoEvent::HangUp)) != ev::IoEvent::None)
+            throw std::runtime_error("Signal event pipe unavailable.");
+        signal_events.drain();
+        bus.publish(StopRequestedEvent{});
+    });
+    reactor.addHandler(worker.eventFd(), ev::IoEvent::Read, [&](int, ev::IoEvent ready) {
+        if ((ready & (ev::IoEvent::Error | ev::IoEvent::HangUp)) != ev::IoEvent::None)
+            throw std::runtime_error("Save event pipe unavailable.");
+        collect();
+    });
+    reactor.addHandler(STDIN_FILENO, ev::IoEvent::Read, [&](int, ev::IoEvent ready) {
+        if ((ready & (ev::IoEvent::Read | ev::IoEvent::HangUp)) == ev::IoEvent::None)
             throw std::runtime_error("stdin unavailable.");
-        if (events.isReadable(input_fd) || events.isHangUp(input_fd) ||
-            events.hasError(input_fd)) {
-            char bytes[4096];
-            const auto size =
-                platform::readNonBlocking(input_fd, bytes, sizeof(bytes));
-            if (!size)
-                continue;
-            if (*size == 0) {
-                eof = true;
-                continue;
-            }
-            for (std::size_t i = 0; i < *size; ++i) {
-                if (discard) {
-                    if (bytes[i] == '\n')
-                        discard = false;
-                    continue;
-                }
-                pending.push_back(bytes[i]);
-                if (pending.size() > 65536 &&
-                    pending.find('\n') == std::string::npos) {
-                    pending.clear();
-                    discard = true;
-                    std::cout << "Error: input line too long.\n";
-                }
-            }
+        if (!input_queued) {
+            reactor.post(read_console);
+            input_queued = true;
         }
-    }
+    });
+    reactor.post([&] {
+        if (!stop_requested)
+            scan();
+        std::cout.flush();
+    });
+
+    std::cout << "Runtime ready. Type help.\n" << std::flush;
+    reactor.run();
+    checkReactor();
+    reactor.removeHandler(STDIN_FILENO);
+    reactor.removeHandler(signal_events.reader());
     std::cout << "Stopping; final save pending.\n" << std::flush;
     bool final_queued = false;
     for (;;) {
@@ -708,7 +819,8 @@ int run(const persist::PersistenceConfig &config) {
             final_queued = prepare(reservation);
             break;
         }
-        save_events.poll();
+        reactor.step();
+        checkReactor();
     }
     worker.stop();
     collect();
