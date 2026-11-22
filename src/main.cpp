@@ -18,6 +18,12 @@
 #include "persistence/PersistenceConfig.h"
 #include "persistence/SaveWorker.h"
 #include "persistence/StateLock.h"
+#include "platform/DescriptorFlags.h"
+#include "platform/DescriptorIO.h"
+#include "platform/EventPipe.h"
+#include "platform/Poller.h"
+#include "platform/SignalHandler.h"
+#include "platform/TemporaryDirectory.h"
 #include "registry/DriverFactoryRegistry.h"
 #include "storage/SQLiteDeviceStorage.h"
 
@@ -31,8 +37,6 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
-#include <cerrno>
 #include <charconv>
 #include <cstdlib>
 #include <cstring>
@@ -215,27 +219,6 @@ arguments(int argc, char *argv[],
     persist::validateConfig(config);
     return config;
 }
-
-// mkdtemp owns private files even when construction of a later service fails.
-class Directory {
-  public:
-    fs::path path;
-    bool preserve = false;
-    Directory(const fs::path &base, const std::string &prefix) {
-        auto pattern = (base / (prefix + "XXXXXX")).string();
-        if (!::mkdtemp(pattern.data()))
-            systemError("mkdtemp");
-        path = pattern;
-    }
-    ~Directory() {
-        if (!preserve) {
-            std::error_code error;
-            fs::remove_all(path, error);
-        }
-    }
-    Directory(const Directory &) = delete;
-    Directory &operator=(const Directory &) = delete;
-};
 
 IDeviceDriver &requireDriver(DeviceRegistry &registry, DeviceId id) {
     auto *driver = registry.find(id);
@@ -456,15 +439,16 @@ std::vector<Value> commandArguments(const std::string &operation,
 }
 
 int run(const persist::PersistenceConfig &config) {
-    SignalPipe signal_events;
-    Signals signals(signal_events);
+    platform::EventPipe signal_events;
+    platform::SignalHandler signals(signal_events);
     persist::StateLock state_lock(config.state_dir);
     const auto saved =
         persist::GenerationManager(state_lock).resolveCommitted();
     persist::requireRamDirectory(config.ram_dir);
-    Directory workspace(config.ram_dir, "smart-home-runtime-");
-    const auto inventory_path = workspace.path / "state.sqlite";
-    const auto graph_path = workspace.path / "ontology.lbdb";
+    platform::TemporaryDirectory workspace(config.ram_dir,
+                                           "smart-home-runtime-");
+    const auto inventory_path = workspace.path() / "state.sqlite";
+    const auto graph_path = workspace.path() / "ontology.lbdb";
     if (saved) {
         fs::copy_file(saved->path / "state.sqlite", inventory_path);
         fs::copy_file(saved->path / "ontology.lbdb", graph_path);
@@ -481,7 +465,7 @@ int run(const persist::PersistenceConfig &config) {
     factories.add("simulated", createSimulatedDriver);
     ontology::OntologyConfig graph_config;
     graph_config.database_path = graph_path;
-    graph_config.ram_workspace_base = workspace.path;
+    graph_config.ram_workspace_base = workspace.path();
     graph_config.allow_disk_fallback = false;
     Ontology graph(graph_config);
     // Preserve committed graph contents for validation before accepting
@@ -521,7 +505,7 @@ int run(const persist::PersistenceConfig &config) {
     };
     // All startup resources are ready. Keep live RAM state if runtime
     // completion fails.
-    workspace.preserve = true;
+    workspace.preserve();
     Revision revision = saved ? saved->revision : 0;
     Revision confirmed = revision;
     bool unsaved = initialized;
@@ -557,7 +541,7 @@ int run(const persist::PersistenceConfig &config) {
     const auto prepare = [&](persist::Reservation &reservation) {
         try {
             validateGraph(graph, storage, registry, snapshotGraph(graph));
-            persist::Snapshot snapshot(workspace.path, revision);
+            persist::Snapshot snapshot(workspace.path(), revision);
             database.storeProperties(capture(storage, registry), revision);
             database.backupTo(snapshot.directory() / "state.sqlite");
             graph.dumpToFile((snapshot.directory() / "ontology.lbdb").string());
@@ -849,10 +833,10 @@ int run(const persist::PersistenceConfig &config) {
     }
     const bool success = final_queued && last_save_success &&
                          confirmed == revision && !unsaved && closed;
-    workspace.preserve = !success;
+    workspace.setPreserve(!success);
     if (!success)
         std::cerr << "Final save failed; recoverable RAM files retained at "
-                  << workspace.path << '\n';
+                  << workspace.path() << '\n';
     return success ? 0 : 1;
 }
 } // namespace

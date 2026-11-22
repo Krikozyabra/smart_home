@@ -160,6 +160,13 @@ target_compile_options(events_tests PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME events_tests COMMAND events_tests)
 set_tests_properties(events_tests PROPERTIES TIMEOUT 15)
 
+add_executable(platform_tests PlatformTests.cpp)
+target_link_libraries(platform_tests PRIVATE SmartHome::Platform Threads::Threads)
+set_target_properties(platform_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+target_compile_options(platform_tests PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME platform_tests COMMAND platform_tests)
+set_tests_properties(platform_tests PROPERTIES TIMEOUT 15)
+
 add_executable(mqtt_tests MqttTests.cpp)
 target_include_directories(mqtt_tests PRIVATE ${PROJECT_SOURCE_DIR}/mqtt/src)
 target_link_libraries(mqtt_tests PRIVATE SmartHome::Mqtt Threads::Threads)

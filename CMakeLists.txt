@@ -16,6 +16,7 @@ endif()
 
 add_subdirectory(common)
 add_subdirectory(events)
+add_subdirectory(platform)
 include(cmake/Spdlog.cmake)
 add_subdirectory(logging)
 add_subdirectory(audio)

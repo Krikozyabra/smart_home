@@ -114,6 +114,7 @@ bathroom temperature_sensor temperature.get
 - Текущий этап объединяет devices, descriptors, drivers, registry, command,
   execution, storage, device_management, discovery, ontology, persistence, logging
   и [events](../events/spec.md).
+  и [platform](../platform/spec.md).
 - MQTT, audio, OWW и обработка текста пока не подключаются. Требование
   к будущим длительным задачам не означает реализацию ИИ на этом этапе.
 - Диспетчеризацию и межпоточное пробуждение предоставляет `SmartHome::Events`.
