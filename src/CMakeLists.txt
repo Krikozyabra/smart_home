@@ -14,6 +14,7 @@ target_link_libraries(smart_home PRIVATE
     SmartHome::Discovery
     SmartHome::Ontology
     SmartHome::Persistence
+    SmartHome::Events
 )
 
 target_link_libraries(smart_home PRIVATE SmartHome::Logging)

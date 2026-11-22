@@ -1,12 +1,15 @@
 /** @file main.cpp
  * @brief Композиция приложения, консольный цикл и фиксация полных поколений.
  */
+#include "ConsoleInput.h"
 #include "command/Command.h"
 #include "device_management/DeviceManager.h"
 #include "discovery/DiscoveryService.h"
 #include "discovery/SimulatedDiscoverySource.h"
 #include "drivers/CapabilityCatalog.h"
 #include "drivers/DeviceCreator.h"
+#include "events/EventBus.h"
+#include "events/Reactor.h"
 #include "execution/CommandDispatcher.h"
 #include "logging/Logging.h"
 #include "ontology/LadybugOntologyStorage.h"
@@ -23,7 +26,6 @@
 #endif
 
 #include <fcntl.h>
-#include <poll.h>
 #include <signal.h>
 #include <unistd.h>
 
@@ -34,7 +36,9 @@
 #include <charconv>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <filesystem>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <map>
@@ -49,12 +53,19 @@
 
 namespace {
 using namespace smart_home;
+namespace ev = smart_home::events;
 namespace fs = std::filesystem;
 namespace log = smart_home::logging;
 namespace persist = smart_home::persistence;
 using Ontology = ontology::LadybugOntologyStorage;
 using persist::DevicePropertiesMap;
 using persist::Revision;
+
+struct ConsoleCommandEvent {
+    std::string line;
+};
+
+struct StopRequestedEvent {};
 
 [[noreturn]] void systemError(const char *operation) {
     throw std::runtime_error(std::string(operation) + ": " +
@@ -108,8 +119,10 @@ extern "C" void requestStop(int) {
     const char byte = 1;
     const int writer = signal_writer.load(std::memory_order_relaxed);
     if (writer >= 0) {
-        const auto ignored = ::write(writer, &byte, 1);
-        (void)ignored;
+        ssize_t result;
+        do {
+            result = ::write(writer, &byte, 1);
+        } while (result < 0 && errno == EINTR);
     }
     errno = saved_errno;
 }
@@ -139,17 +152,6 @@ class Signals {
         sigaction(SIGTERM, &old_term_, nullptr);
         signal_writer = -1;
     }
-};
-
-class StdinFlags {
-    int old_;
-
-  public:
-    StdinFlags() : old_(fcntl(STDIN_FILENO, F_GETFL)) {
-        if (old_ < 0 || fcntl(STDIN_FILENO, F_SETFL, old_ | O_NONBLOCK) < 0)
-            systemError("stdin flags");
-    }
-    ~StdinFlags() { fcntl(STDIN_FILENO, F_SETFL, old_); }
 };
 
 template <class T> T integer(const std::string &text) {
@@ -505,8 +507,18 @@ int run(const persist::PersistenceConfig &config) {
             {"SIM-TEMP-001", "simulated", "TemperatureSensor in bath", {"temperature"}}},
         false));
     DiscoveryService discovery(manager, std::move(sources));
-    StdinFlags stdin_flags;
+    runtime::ConsoleInput console(STDIN_FILENO);
     persist::SaveWorker worker(state_lock, config.capacity);
+    ev::EventBus bus;
+    std::exception_ptr reactor_error;
+    ev::Reactor reactor([&](std::exception_ptr error) {
+        reactor_error = std::move(error);
+        reactor.stop();
+    });
+    const auto checkReactor = [&] {
+        if (reactor_error)
+            std::rethrow_exception(reactor_error);
+    };
     // All startup resources are ready. Keep live RAM state if runtime
     // completion fails.
     workspace.preserve = true;
@@ -520,8 +532,8 @@ int run(const persist::PersistenceConfig &config) {
     };
     if (initialized)
         markChanged(persist::nextRevision(revision));
-    const auto collect = [&] {
-        for (const auto &result : worker.collectResults()) {
+    const auto save_subscription = bus.subscribe<persist::SaveResult>(
+        [&](const persist::SaveResult &result) {
             last_save_success = result.success;
             if (result.success) {
                 confirmed = std::max(confirmed, result.revision);
@@ -536,7 +548,11 @@ int run(const persist::PersistenceConfig &config) {
                 log::log(log::Level::Error, "Runtime",
                          "Generation commit failed; RAM state retained.");
             }
-        }
+        });
+    const auto collect = [&] {
+        for (const auto &result : worker.collectResults())
+            bus.publish(result);
+        std::cout.flush();
     };
     const auto prepare = [&](persist::Reservation &reservation) {
         try {
@@ -612,6 +628,11 @@ int run(const persist::PersistenceConfig &config) {
         }
     };
     bool exiting = false;
+    const auto stop_subscription = bus.subscribe<StopRequestedEvent>(
+        [&](const StopRequestedEvent &) {
+            exiting = true;
+            reactor.stop();
+        });
     const auto command = [&](const std::string &line) {
         std::istringstream input(line);
         std::vector<std::string> words;
@@ -632,7 +653,7 @@ int run(const persist::PersistenceConfig &config) {
                 return;
             }
             if (words[0] == "exit" && words.size() == 1) {
-                exiting = true;
+                bus.publish(StopRequestedEvent{});
                 return;
             }
             if (words[0] == "list" && words.size() == 1) {
@@ -748,72 +769,63 @@ int run(const persist::PersistenceConfig &config) {
             log::log(log::Level::Warn, "Runtime", "Console command rejected.");
         }
     };
-    std::cout << "Runtime ready. Type help.\n" << std::flush;
-    bool first_iteration = true;
-    std::string pending;
-    bool eof = false, discard = false;
-    while (!exiting && !stop_requested) {
-        collect();
-        if (first_iteration) {
-            first_iteration = false;
-            scan();
-            continue;
-        }
-        const auto newline = pending.find('\n');
-        if (newline != std::string::npos) {
-            const auto line = pending.substr(0, newline);
-            pending.erase(0, newline + 1);
-            if (line.size() > 65536)
-                std::cout << "Error: input line too long.\n";
-            else
-                command(line);
+    const auto command_subscription = bus.subscribe<ConsoleCommandEvent>(
+        [&](const ConsoleCommandEvent &event) {
+            command(event.line);
             std::cout.flush();
-            continue;
+        });
+
+    bool input_queued = false;
+    const std::function<void()> read_console = [&] {
+        input_queued = false;
+        if (exiting || stop_requested)
+            return;
+        auto input = console.next();
+        if (stop_requested)
+            return;
+        using Status = runtime::ConsoleInput::Status;
+        if (input.status == Status::Line || (input.status == Status::End && !input.line.empty()))
+            bus.publish(ConsoleCommandEvent{std::move(input.line)});
+        if (input.status == Status::TooLong)
+            std::cout << "Error: input line too long.\n" << std::flush;
+        if (input.status == Status::End && !exiting)
+            bus.publish(StopRequestedEvent{});
+        if (!exiting && console.hasBufferedInput()) {
+            reactor.post(read_console);
+            input_queued = true;
         }
-        if (eof) {
-            if (!pending.empty())
-                command(pending);
-            break;
-        }
-        std::cout.flush();
-        pollfd fds[] = {{STDIN_FILENO, POLLIN, 0},
-                        {worker.eventFd(), POLLIN, 0},
-                        {signal_events.reader(), POLLIN, 0}};
-        const int result = ::poll(fds, 3, -1);
-        if (result < 0) {
-            if (errno == EINTR)
-                continue;
-            systemError("poll");
-        }
-        if (fds[2].revents)
-            signal_events.drain();
-        if (fds[0].revents & POLLNVAL)
+    };
+
+    reactor.addHandler(signal_events.reader(), ev::IoEvent::Read, [&](int, ev::IoEvent ready) {
+        if ((ready & (ev::IoEvent::Error | ev::IoEvent::HangUp)) != ev::IoEvent::None)
+            throw std::runtime_error("Signal event pipe unavailable.");
+        signal_events.drain();
+        bus.publish(StopRequestedEvent{});
+    });
+    reactor.addHandler(worker.eventFd(), ev::IoEvent::Read, [&](int, ev::IoEvent ready) {
+        if ((ready & (ev::IoEvent::Error | ev::IoEvent::HangUp)) != ev::IoEvent::None)
+            throw std::runtime_error("Save event pipe unavailable.");
+        collect();
+    });
+    reactor.addHandler(STDIN_FILENO, ev::IoEvent::Read, [&](int, ev::IoEvent ready) {
+        if ((ready & (ev::IoEvent::Read | ev::IoEvent::HangUp)) == ev::IoEvent::None)
             throw std::runtime_error("stdin unavailable.");
-        if (fds[0].revents & (POLLIN | POLLHUP | POLLERR)) {
-            char bytes[4096];
-            const auto size = ::read(STDIN_FILENO, bytes, sizeof(bytes));
-            if (size == 0)
-                eof = true;
-            else if (size < 0) {
-                if (errno != EAGAIN && errno != EINTR)
-                    systemError("read stdin");
-            } else
-                for (ssize_t i = 0; i < size; ++i) {
-                    if (discard) {
-                        if (bytes[i] == '\n')
-                            discard = false;
-                        continue;
-                    }
-                    pending.push_back(bytes[i]);
-                    if (pending.size() > 65536 &&
-                        pending.find('\n') == std::string::npos) {
-                        pending.clear();
-                        discard = true;
-                        std::cout << "Error: input line too long.\n";
-                    }
-                }
+        if (!input_queued) {
+            reactor.post(read_console);
+            input_queued = true;
         }
-    }
+    });
+    reactor.post([&] {
+        if (!stop_requested)
+            scan();
+        std::cout.flush();
+    });
+
+    std::cout << "Runtime ready. Type help.\n" << std::flush;
+    reactor.run();
+    checkReactor();
+    reactor.removeHandler(STDIN_FILENO);
+    reactor.removeHandler(signal_events.reader());
     std::cout << "Stopping; final save pending.\n" << std::flush;
     bool final_queued = false;
     for (;;) {
@@ -823,9 +835,8 @@ int run(const persist::PersistenceConfig &config) {
             final_queued = prepare(reservation);
             break;
         }
-        pollfd event{worker.eventFd(), POLLIN, 0};
-        if (::poll(&event, 1, -1) < 0 && errno != EINTR)
-            systemError("poll final save");
+        reactor.step();
+        checkReactor();
     }
     worker.stop();
     collect();

@@ -20,7 +20,7 @@ set(DOXYGEN_FILE_PATTERNS "*.h" "*.hpp" "*.hxx" "*.cpp" "*.md")
 
 set(DOC_INPUTS)
 foreach(MODULE common devices descriptors drivers registry command execution
-               storage device_management discovery logging mqtt ontology oww audio persistence src tests)
+               storage device_management discovery logging mqtt ontology oww audio persistence events src tests)
     if(EXISTS "${PROJECT_SOURCE_DIR}/${MODULE}")
         list(APPEND DOC_INPUTS "${PROJECT_SOURCE_DIR}/${MODULE}")
     endif()

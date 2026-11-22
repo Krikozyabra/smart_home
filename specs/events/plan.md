@@ -1,6 +1,6 @@
 # План реализации модуля events
 
-Статус: планирование; основание — [spec.md](spec.md), [design.md](design.md), `AGENTS.md`.
+Основание — [spec.md](spec.md), [design.md](design.md), `AGENTS.md`.
 Целевая платформа — Linux, Raspberry Pi 4b 8/120 (SD-card), CMake 3.20+, C++17.
 
 ## 1. Соответствие требованиям спецификации
@@ -18,17 +18,17 @@
 ## 2. Пошаговая структура работ (Work Breakdown Structure)
 
 ### Шаг 1: Структура каталогов и CMake
-- [ ] 1.1. Создать каталог `events/` со структурой `include/events/` и `src/`.
-- [ ] 1.2. Создать `events/CMakeLists.txt` с таргетом `SmartHome::Events` (C++17, `-Wall -Wextra -Wpedantic`).
-- [ ] 1.3. Подключить `events` в корневой `CMakeLists.txt` и `cmake/Docs.cmake`.
+- [x] 1.1. Создать каталог `events/` со структурой `include/events/` и `src/`.
+- [x] 1.2. Создать `events/CMakeLists.txt` с таргетом `SmartHome::Events` (C++17, `-Wall -Wextra -Wpedantic`).
+- [x] 1.3. Подключить `events` в корневой `CMakeLists.txt` и `cmake/Docs.cmake`.
 
 ### Шаг 2: Реализация типизированной шины событий
-- [ ] 2.1. Реализовать `Subscription.h` и `Subscription.cpp` (RAII токен).
-- [ ] 2.2. Реализовать `EventBus.h` и `EventBus.cpp` (шаблонная подписка, `type_index`, синхронная реентерабельная публикация).
+- [x] 2.1. Реализовать `Subscription.h` и `Subscription.cpp` (RAII токен).
+- [x] 2.2. Реализовать `EventBus.h` и `EventBus.cpp` (шаблонная подписка, `type_index`, синхронная реентерабельная публикация).
 
 ### Шаг 3: Реализация реактора и очереди задач
-- [ ] 3.1. Реализовать типы `IoEvents.h` и таймеры `TimerHandle.h`.
-- [ ] 3.2. Реализовать `Reactor.h` и `Reactor.cpp`:
+- [x] 3.1. Реализовать типы `IoEvents.h` и таймеры `TimerHandle.h`.
+- [x] 3.2. Реализовать `Reactor.h` и `Reactor.cpp`:
   - Опрос дескрипторов через `poll(2)`.
   - Межпоточное пробуждение через `eventfd(EFD_NONBLOCK | EFD_CLOEXEC)`.
   - Очередь `post()` и исполнение задач на потоке реактора.
@@ -36,14 +36,15 @@
   - Методы `run()`, `step()`, `stop()`.
 
 ### Шаг 4: Модульные тесты
-- [ ] 4.1. Создать `tests/EventsTests.cpp` с полным покрытием требований EV-001–EV-007.
-- [ ] 4.2. Зарегистрировать `events_tests` в `tests/CMakeLists.txt`.
+- [x] 4.1. Создать `tests/EventsTests.cpp` для проверки требований EV-001–EV-007.
+- [x] 4.2. Зарегистрировать `events_tests` в `tests/CMakeLists.txt`.
 
 ### Шаг 5: Рефакторинг `src/main.cpp`
-- [ ] 5.1. Подключить `SmartHome::Events` в `src/CMakeLists.txt`.
-- [ ] 5.2. Заменить ad-hoc опрос дескрипторов и ручной цикл в `src/main.cpp` на `Reactor` и подписки `EventBus`.
+- [x] 5.1. Подключить `SmartHome::Events` в `src/CMakeLists.txt`.
+- [x] 5.2. Заменить ручной опрос в `src/main.cpp` на `Reactor` и подписки `EventBus`.
+- [x] 5.3. Вынести буферизацию stdin в `ConsoleInput` и проверить, что `exit` прекращает обработку оставшихся строк.
 
 ### Шаг 6: Верификация
-- [ ] 6.1. Сборка проекта и прохождение юнит-тестов `events_tests`.
-- [ ] 6.2. Регрессионный запуск `RuntimeTests.py` и `LoggingCliTests.cmake`.
-- [ ] 6.3. Сборка документации Doxygen (`docs`).
+- [x] 6.1. Сборка проекта и прохождение юнит-тестов `events_tests`.
+- [x] 6.2. Регрессионный запуск `runtime_*_tests` и `logging_cli_tests` через CTest.
+- [x] 6.3. Сборка документации Doxygen (`docs`).

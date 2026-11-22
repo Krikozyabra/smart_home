@@ -15,6 +15,7 @@ if(BUILD_DOCS)
 endif()
 
 add_subdirectory(common)
+add_subdirectory(events)
 include(cmake/Spdlog.cmake)
 add_subdirectory(logging)
 add_subdirectory(audio)

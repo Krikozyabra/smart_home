@@ -153,6 +153,13 @@ add_test(NAME logging_cli_tests COMMAND ${CMAKE_COMMAND}
     -DSMART_HOME_EXE=$<TARGET_FILE:smart_home>
     -P ${CMAKE_CURRENT_SOURCE_DIR}/LoggingCliTests.cmake)
 
+add_executable(events_tests EventsTests.cpp)
+target_link_libraries(events_tests PRIVATE SmartHome::Events Threads::Threads)
+set_target_properties(events_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+target_compile_options(events_tests PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME events_tests COMMAND events_tests)
+set_tests_properties(events_tests PROPERTIES TIMEOUT 15)
+
 add_executable(mqtt_tests MqttTests.cpp)
 target_include_directories(mqtt_tests PRIVATE ${PROJECT_SOURCE_DIR}/mqtt/src)
 target_link_libraries(mqtt_tests PRIVATE SmartHome::Mqtt Threads::Threads)
