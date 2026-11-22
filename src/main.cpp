@@ -18,10 +18,7 @@
 #include "persistence/PersistenceConfig.h"
 #include "persistence/SaveWorker.h"
 #include "persistence/StateLock.h"
-#include "platform/DescriptorFlags.h"
-#include "platform/DescriptorIO.h"
 #include "platform/EventPipe.h"
-#include "platform/Poller.h"
 #include "platform/SignalHandler.h"
 #include "platform/TemporaryDirectory.h"
 #include "registry/DriverFactoryRegistry.h"
@@ -31,15 +28,12 @@
 #include "Testing.h"
 #endif
 
-#include <fcntl.h>
-#include <signal.h>
 #include <unistd.h>
 
 #include <algorithm>
 #include <array>
 #include <charconv>
 #include <cstdlib>
-#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <functional>
@@ -70,93 +64,6 @@ struct ConsoleCommandEvent {
 };
 
 struct StopRequestedEvent {};
-
-[[noreturn]] void systemError(const char *operation) {
-    throw std::runtime_error(std::string(operation) + ": " +
-                             std::strerror(errno));
-}
-
-class Fd {
-    int value_ = -1;
-
-  public:
-    explicit Fd(int value = -1) : value_(value) {}
-    ~Fd() {
-        if (value_ >= 0)
-            ::close(value_);
-    }
-    Fd(const Fd &) = delete;
-    Fd &operator=(const Fd &) = delete;
-    int get() const { return value_; }
-};
-
-class SignalPipe {
-    Fd reader_, writer_;
-    static std::array<int, 2> openPipe() {
-        std::array<int, 2> fds{};
-        if (::pipe2(fds.data(), O_NONBLOCK | O_CLOEXEC) != 0)
-            systemError("pipe2");
-        return fds;
-    }
-    explicit SignalPipe(std::array<int, 2> fds)
-        : reader_(fds[0]), writer_(fds[1]) {}
-
-  public:
-    SignalPipe() : SignalPipe(openPipe()) {}
-    int reader() const { return reader_.get(); }
-    int writer() const { return writer_.get(); }
-    void drain() const {
-        char bytes[128];
-        while (::read(reader(), bytes, sizeof(bytes)) > 0) {
-        }
-    }
-};
-
-static_assert(std::atomic<bool>::is_always_lock_free &&
-                  std::atomic<int>::is_always_lock_free,
-              "Signal notification requires lock-free atomics.");
-std::atomic<bool> stop_requested{false};
-std::atomic<int> signal_writer{-1};
-extern "C" void requestStop(int) {
-    const int saved_errno = errno;
-    stop_requested = 1;
-    const char byte = 1;
-    const int writer = signal_writer.load(std::memory_order_relaxed);
-    if (writer >= 0) {
-        ssize_t result;
-        do {
-            result = ::write(writer, &byte, 1);
-        } while (result < 0 && errno == EINTR);
-    }
-    errno = saved_errno;
-}
-
-class Signals {
-    struct sigaction old_int_{}, old_term_{};
-
-  public:
-    explicit Signals(const SignalPipe &pipe) {
-        stop_requested = 0;
-        signal_writer = pipe.writer();
-        struct sigaction action{};
-        action.sa_handler = requestStop;
-        sigemptyset(&action.sa_mask);
-        if (sigaction(SIGINT, &action, &old_int_) != 0) {
-            signal_writer = -1;
-            systemError("sigaction");
-        }
-        if (sigaction(SIGTERM, &action, &old_term_) != 0) {
-            sigaction(SIGINT, &old_int_, nullptr);
-            signal_writer = -1;
-            systemError("sigaction");
-        }
-    }
-    ~Signals() {
-        sigaction(SIGINT, &old_int_, nullptr);
-        sigaction(SIGTERM, &old_term_, nullptr);
-        signal_writer = -1;
-    }
-};
 
 template <class T> T integer(const std::string &text) {
     T result{};
@@ -762,10 +669,10 @@ int run(const persist::PersistenceConfig &config) {
     bool input_queued = false;
     const std::function<void()> read_console = [&] {
         input_queued = false;
-        if (exiting || stop_requested)
+        if (exiting || signals.isStopRequested())
             return;
         auto input = console.next();
-        if (stop_requested)
+        if (signals.isStopRequested())
             return;
         using Status = runtime::ConsoleInput::Status;
         if (input.status == Status::Line || (input.status == Status::End && !input.line.empty()))
@@ -780,10 +687,10 @@ int run(const persist::PersistenceConfig &config) {
         }
     };
 
-    reactor.addHandler(signal_events.reader(), ev::IoEvent::Read, [&](int, ev::IoEvent ready) {
+    reactor.addHandler(signals.eventFd(), ev::IoEvent::Read, [&](int, ev::IoEvent ready) {
         if ((ready & (ev::IoEvent::Error | ev::IoEvent::HangUp)) != ev::IoEvent::None)
             throw std::runtime_error("Signal event pipe unavailable.");
-        signal_events.drain();
+        signals.drain();
         bus.publish(StopRequestedEvent{});
     });
     reactor.addHandler(worker.eventFd(), ev::IoEvent::Read, [&](int, ev::IoEvent ready) {
@@ -800,7 +707,7 @@ int run(const persist::PersistenceConfig &config) {
         }
     });
     reactor.post([&] {
-        if (!stop_requested)
+        if (!signals.isStopRequested())
             scan();
         std::cout.flush();
     });
@@ -809,7 +716,7 @@ int run(const persist::PersistenceConfig &config) {
     reactor.run();
     checkReactor();
     reactor.removeHandler(STDIN_FILENO);
-    reactor.removeHandler(signal_events.reader());
+    reactor.removeHandler(signals.eventFd());
     std::cout << "Stopping; final save pending.\n" << std::flush;
     bool final_queued = false;
     for (;;) {

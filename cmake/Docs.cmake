@@ -38,7 +38,7 @@ list(APPEND DOC_INPUTS "${PROJECT_SOURCE_DIR}/specs/audio" "${PROJECT_SOURCE_DIR
                       "${PROJECT_SOURCE_DIR}/specs/devices"
                       "${PROJECT_SOURCE_DIR}/specs/drivers"
                       "${PROJECT_SOURCE_DIR}/specs/persistence"
-                      "${PROJECT_SOURCE_DIR}/specs/events")
+                      "${PROJECT_SOURCE_DIR}/specs/events"
                       "${PROJECT_SOURCE_DIR}/specs/platform")
 
 doxygen_add_docs(docs ${DOC_INPUTS}
