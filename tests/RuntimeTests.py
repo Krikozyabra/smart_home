@@ -71,8 +71,11 @@ class App:
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
         case.addCleanup(self.kill)
         os.set_blocking(self.process.stdout.fileno(), False)
+        os.set_blocking(self.process.stderr.fileno(), False)
         self.output = ''
+        self.errors = ''
         self.cursor = 0
+        self.error_cursor = 0
         if ready:
             self.expect('Scan: 3 processed, 0 errors')
 
@@ -80,21 +83,28 @@ class App:
         self.process.stdin.write(text.encode())
         self.process.stdin.flush()
 
-    def expect(self, pattern):
+    def expect(self, pattern, *, stderr=False):
+        stream = self.process.stderr if stderr else self.process.stdout
+        buffer = 'errors' if stderr else 'output'
+        position = 'error_cursor' if stderr else 'cursor'
+        cursor = getattr(self, position)
         deadline = time.monotonic() + 15
         while True:
-            match = re.search(pattern, self.output[self.cursor:])
+            captured = getattr(self, buffer)
+            match = re.search(pattern, captured[cursor:])
             if match:
-                self.cursor += match.end()
+                setattr(self, position, cursor + match.end())
                 return match
             remaining = deadline - time.monotonic()
-            if remaining <= 0 or not select.select([self.process.stdout], [], [], remaining)[0]:
-                raise AssertionError(f'timed out waiting for {pattern!r}: {self.output}')
-            data = os.read(self.process.stdout.fileno(), 65536)
+            if remaining <= 0 or not select.select([stream], [], [], remaining)[0]:
+                raise AssertionError(f'timed out waiting for {pattern!r}: {self.output}\n{self.errors}')
+            data = os.read(stream.fileno(), 65536)
             if not data:
-                raise AssertionError(f'process exited waiting for {pattern!r}: {self.output}\n'
-                                     + self.process.stderr.read().decode())
-            self.output += data.decode()
+                other = self.process.stdout if stderr else self.process.stderr
+                remaining_output = (other.read() or b'').decode()
+                raise AssertionError(f'process exited waiting for {pattern!r}: '
+                                     f'{self.output}\n{self.errors}{remaining_output}')
+            setattr(self, buffer, captured + data.decode())
 
     def initial_save(self):
         self.expect('Saved revision 2')
@@ -114,14 +124,14 @@ class App:
             self.send(command)
         self.process.wait(timeout=20)
         self.output += self.process.stdout.read().decode()
-        errors = self.process.stderr.read().decode()
+        self.errors += self.process.stderr.read().decode()
         if self.process.returncode != code:
-            raise AssertionError(f'exit {self.process.returncode}, expected {code}: {self.output}\n{errors}')
+            raise AssertionError(f'exit {self.process.returncode}, expected {code}: {self.output}\n{self.errors}')
         self.process.stdout.close()
         self.process.stderr.close()
         if not self.process.stdin.closed:
             self.process.stdin.close()
-        return errors
+        return self.errors
 
     def kill(self):
         if self.process.poll() is None:
@@ -198,11 +208,12 @@ class Console(RuntimeCase):
         app.expect('color = 255 255 255')
         app.expect('on_off = false')
         app.expect('temperature = 23')
-        app.change('1 brightness.set 75')
-        app.change('living_room light on_off.set true')
-        app.change('living_room light color.set 10 20 30')
+        app.change('device 1 brightness.set 75')
+        app.change('group living_room light on_off.set true')
+        app.change('group living_room light color.set 10 20 30')
         count = len(re.findall('Save queued revision', app.output))
-        app.send('scan\n1 brightness.set 75\n1 brightness.get\nbathroom temperature_sensor temperature.get\n')
+        app.send('scan\ndevice 1 brightness.set 75\ndevice 1 brightness.get\n'
+                 'group bathroom temperature_sensor temperature.get\n')
         app.expect('Scan: 3 processed, 0 errors')
         app.expect('Device 1 brightness.set: applied')
         app.expect('Device 1 brightness.get: 75')
@@ -229,35 +240,46 @@ class Console(RuntimeCase):
     def test_parser_and_partial_group(self):
         app = App(self)
         app.initial_save()
-        for text in ('-1 brightness.get', '9223372036854775808 brightness.get', '1x brightness.get',
-                     '1', '1 bogus', '1 brightness.get extra', '1 brightness.set 2x',
-                     '1 on_off.set 1', '1 color.set 256 0 0', '1 color.set -1 0 0',
-                     '1 color.set 0 0', 'living_room fan on_off.get', 'absent light on_off.get',
+        for text in ('device -1 brightness.get', 'device 9223372036854775808 brightness.get',
+                     'device 1x brightness.get', 'device 1', 'device 1 bogus',
+                     'device 1 brightness.get extra', 'device 1 brightness.set 2x',
+                     'device 1 on_off.set 1', 'device 1 color.set 256 0 0', 'device 1 color.set -1 0 0',
+                     'device 1 color.set 0 0', 'group living_room fan on_off.get',
                      'show -1', 'show 999', 'help extra'):
             app.send(text + '\n')
-            app.expect('Error:')
-        app.send('1 brightness.set 101\n3 color.set 1 2 3\n999 on_off.get\n')
-        app.expect('Device 1 error:')
-        app.expect('Device 3 error:')
-        app.expect('Device 999 error:')
-        self.control.fail('target-2-2')
-        app.change('living_room light brightness.set 85')
-        self.assertIn('Device 2 error:', app.output)
-        (self.control.path / 'target-2-2.fail').unlink()
-        app.send('1 brightness.get\n2 brightness.get\n')
-        app.expect('Device 1 brightness.get: 85')
-        app.expect('Device 2 brightness.get: 50')
+            app.expect('Error:', stderr=True)
+        app.send('1 brightness.get\nliving_room light on_off.get\n')
+        app.expect('Error: Unknown command: 1', stderr=True)
+        app.expect('Error: Unknown command: living_room', stderr=True)
+        app.send('group absent light on_off.get\ngroup bathroom light on_off.get\n')
+        app.expect(r'Error: No matching devices\.', stderr=True)
+        app.expect(r'Error: No matching devices\.', stderr=True)
+        app.send('device 1 brightness.set 101\ndevice 3 color.set 1 2 3\ndevice 999 on_off.get\n')
+        app.expect(r'Error: Brightness must be an integer in 0\.\.100\.', stderr=True)
+        app.expect('Device 3 error:', stderr=True)
+        app.expect('Device 999 error:', stderr=True)
+        self.control.fail('target-1-2')
+        app.change('group living_room light brightness.set 85')
+        app.expect('Device 1 error:', stderr=True)
+        (self.control.path / 'target-1-2.fail').unlink()
+        app.send('device 1 brightness.get\ndevice 2 brightness.get\n')
+        app.expect('Device 1 brightness.get: 50')
+        app.expect('Device 2 brightness.get: 85')
         app.finish()
+        self.assertNotIn('Error:', app.output)
+        self.assertNotIn(' error:', app.output)
         _, _, values = self.generation()
-        self.assertEqual([values[1]['brightness'], values[2]['brightness']], [85, 50])
+        self.assertEqual([values[1]['brightness'], values[2]['brightness']], [50, 85])
 
     def test_eof_tail_and_long_line(self):
         app = App(self)
         app.initial_save()
         app.send('x' * 70000 + '\nhelp\n')
-        app.expect('Error: input line too long.')
+        app.expect('Error: input line too long.', stderr=True)
+        app.expect(r'device <id> <operation> \[arguments\]')
+        app.expect(r'group <room> <type> <operation> \[arguments\]')
         app.expect('Operations:')
-        app.send('1 brightness.set 61')
+        app.send('device 1 brightness.set 61')
         app.finish(None)
         _, _, values = self.generation()
         self.assertEqual(values[1]['brightness'], 61)
@@ -265,7 +287,7 @@ class Console(RuntimeCase):
     def test_exit_skips_buffered_commands(self):
         app = App(self)
         app.initial_save()
-        app.finish('exit\n1 brightness.set 99\n')
+        app.finish('exit\ndevice 1 brightness.set 99\n')
         _, _, values = self.generation()
         self.assertEqual(values[1]['brightness'], 50)
 
@@ -285,7 +307,7 @@ class Persistence(RuntimeCase):
                 key = point + '-3'
                 self.control.gate(key)
                 app = App(self)
-                app.send('living_room light brightness.set 77\n')
+                app.send('group living_room light brightness.set 77\n')
                 self.control.wait(key)
                 app.kill()  # SIGKILL: no cleanup/final save.
                 (self.control.path / (key + '.gate')).unlink()
@@ -389,9 +411,9 @@ class Persistence(RuntimeCase):
 
         again = App(self, ready=False)
         again.expect('Runtime ready')
-        again.expect('Error: Runtime revision overflow')  # Initial scan cannot mutate.
-        again.send('1 brightness.set 80\n1 brightness.get\n')
-        again.expect('Error: Runtime revision overflow')
+        again.expect('Error: Runtime revision overflow', stderr=True)  # Initial scan cannot mutate.
+        again.send('device 1 brightness.set 80\ndevice 1 brightness.get\n')
+        again.expect('Error: Runtime revision overflow', stderr=True)
         again.expect('Device 1 brightness.get: 50')
         again.finish()
         self.assertEqual(self.generation()[2][1]['brightness'], 50)
@@ -402,8 +424,8 @@ class Events(RuntimeCase):
         self.control.gate('before-files-2')
         app = App(self, capacity=1)
         self.control.wait('before-files-2')
-        app.send('1 brightness.set 70\nlist\n1 brightness.')
-        app.expect('Snapshot queue full; change rejected before execution')
+        app.send('device 1 brightness.set 70\nlist\ndevice 1 brightness.')
+        app.expect('Snapshot queue full; change rejected before execution', stderr=True)
         app.expect('Device 3 TemperatureSensor in bath')
         self.control.release('before-files-2')
         app.expect('Saved revision 2')  # Completing a save does not need a newline on stdin.
@@ -416,15 +438,15 @@ class Events(RuntimeCase):
         app.initial_save()
         self.control.gate('before-files-3')
         self.control.gate('before-files-4')
-        app.send('1 brightness.set 71\n')
+        app.send('device 1 brightness.set 71\n')
         app.expect('Save queued revision 3')
         self.control.wait('before-files-3')
-        app.send('1 brightness.set 72\n')
+        app.send('device 1 brightness.set 72\n')
         app.expect('Save queued revision 4')
         self.control.release('before-files-3')
         app.expect('Saved revision 3')
         self.control.wait('before-files-4')
-        app.send('1 brightness.get\n')
+        app.send('device 1 brightness.get\n')
         app.expect('Device 1 brightness.get: 72')
         self.assertNotIn('Saved revision 4', app.output)
         self.control.release('before-files-4')
@@ -441,7 +463,7 @@ class Events(RuntimeCase):
                 self.control.gate(key)
                 app = App(self, capacity=1)
                 self.control.wait(key)
-                app.send('1 brightness.')  # Incomplete input cannot mask a signal.
+                app.send('device 1 brightness.')  # Incomplete input cannot mask a signal.
                 app.process.send_signal(signum)
                 app.expect('Stopping; final save pending.')
                 self.assertIsNone(app.process.poll())
@@ -467,7 +489,7 @@ class Failures(RuntimeCase):
         app.initial_save()
         old = self.active_path()
         self.control.fail('committed-3')
-        self.assertEqual(app.change('1 brightness.set 76'), 3)
+        self.assertEqual(app.change('device 1 brightness.set 76'), 3)
         self.assertTrue(old.is_dir())
         self.assertEqual(self.generation()[2][1]['brightness'], 76)
         (self.control.path / 'committed-3.fail').unlink()
@@ -482,7 +504,7 @@ class Failures(RuntimeCase):
             with self.subTest(point=point):
                 key = f'{point}-{revision}'
                 self.control.fail(key)
-                app.send(f'1 brightness.set {brightness}\n')
+                app.send(f'device 1 brightness.set {brightness}\n')
                 app.expect(f'Changes applied; save pending revision {revision}')
                 app.expect('Save preparation failed' if point == 'prepare' else f'Save failed for revision {revision}')
                 if point != 'after-current':
@@ -493,7 +515,7 @@ class Failures(RuntimeCase):
                 else:
                     self.assertNotEqual(self.generation()[0].name, baseline)
                     self.assertTrue((self.state / 'generations' / baseline).is_dir())
-                app.send('1 brightness.get\n')
+                app.send('device 1 brightness.get\n')
                 app.expect(f'Device 1 brightness.get: {brightness}')
                 (self.control.path / (key + '.fail')).unlink()
                 app.send('save\n')

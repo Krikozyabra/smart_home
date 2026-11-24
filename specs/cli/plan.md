@@ -26,26 +26,36 @@
 - [x] 1.3. Зарегистрировать модуль в таблице `specs/README.md`.
 
 ### Шаг 2: Создание модуля `cli` и CMake
-- [ ] 2.1. Создать каталог `cli/` со структурой `include/cli/` и `src/`.
-- [ ] 2.2. Настроить `cli/CMakeLists.txt` с библиотекой `SmartHome::Cli` (C++17, `-Wall -Wextra -Wpedantic`).
-- [ ] 2.3. Подключить `cli` в корневом `CMakeLists.txt` и `cmake/Docs.cmake`.
+- [x] 2.1. Создать каталог `cli/` со структурой `include/cli/` и `src/`.
+- [x] 2.2. Настроить `cli/CMakeLists.txt` с библиотекой `SmartHome::Cli` (C++17, `-Wall -Wextra -Wpedantic`).
+- [x] 2.3. Подключить `cli` в корневом `CMakeLists.txt` и `cmake/Docs.cmake`.
 
 ### Шаг 3: Реализация компонентов CLI
-- [ ] 3.1. Реализовать `ICliOutputSink.h`, `StreamCliSink.h` и `StringCliSink.h`.
-- [ ] 3.2. Реализовать `ICliCommand.h` и `ActionCommand.h`.
-- [ ] 3.3. Реализовать `ShowCommand`, `DeviceCommand` и `GroupCommand`.
-- [ ] 3.4. Реализовать `CliProcessor.h` и `CliProcessor.cpp` с токенизацией и поиском по `std::unordered_map`.
+- [x] 3.1. Реализовать `ICliOutputSink.h`, `StreamCliSink.h` и `StringCliSink.h`.
+- [x] 3.2. Реализовать `ICliCommand.h` и `ActionCommand.h`.
+- [x] 3.3. Реализовать `ShowCommand`, `DeviceCommand` и `GroupCommand`.
+- [x] 3.4. Реализовать `CliProcessor.h` и `CliProcessor.cpp` с токенизацией и поиском по `std::unordered_map`.
 
 ### Шаг 4: Модульные тесты CTest
-- [ ] 4.1. Создать файл `tests/CliTests.cpp` с покрытием требований CLI-001–CLI-010.
-- [ ] 4.2. Зарегистрировать цель `cli_tests` в `tests/CMakeLists.txt`.
+- [x] 4.1. Создать файл `tests/CliTests.cpp` с покрытием требований CLI-001–CLI-010.
+- [x] 4.2. Зарегистрировать цель `cli_tests` в `tests/CMakeLists.txt`.
 
 ### Шаг 5: Интеграция в `src/main.cpp` и обновление `RuntimeTests.py`
-- [ ] 5.1. Подключить `SmartHome::Cli` в `src/CMakeLists.txt`.
-- [ ] 5.2. Заменить внутренний ручной парсинг строк в `src/main.cpp` на `CliProcessor`.
-- [ ] 5.3. Обновить строки команд устройств в `tests/RuntimeTests.py` (`device 1 ...`, `group living_room ...`).
+- [x] 5.1. Подключить `SmartHome::Cli` в `src/CMakeLists.txt`.
+- [x] 5.2. Заменить внутренний ручной парсинг строк в `src/main.cpp` на `CliProcessor`.
+- [x] 5.3. Обновить строки команд устройств в `tests/RuntimeTests.py` и `tests/LoggingCliTests.cmake`.
 
 ### Шаг 6: Верификация
-- [ ] 6.1. Сборка проекта и прохождение unit-тестов `cli_tests`.
-- [ ] 6.2. Прохождение системных тестов `runtime_*_tests`.
-- [ ] 6.3. Сборка документации Doxygen (`cmake --build build --target docs`).
+- [x] 6.1. Сборка проекта и прохождение unit-тестов `cli_tests`.
+- [x] 6.2. Прохождение системных тестов `runtime_*_tests`.
+- [x] 6.3. Сборка документации Doxygen (`cmake --build build --target docs`).
+
+Проверки на рабочей машине выполнены с LadybugDB SDK 0.22.3 из `libs/`.
+
+| Команда | Результат |
+|---|---|
+| `cmake --build build -j 4` | Сборка завершилась успешно |
+| `ctest --test-dir build --output-on-failure -j 4` | 36 из 36 тестов прошли, включая `cli_tests` и четыре набора runtime |
+| `cmake --build build --target docs` | Документация Doxygen с API CLI сгенерирована |
+
+Проверка на Raspberry Pi остаётся невыполненной.

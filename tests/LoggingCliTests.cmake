@@ -7,7 +7,8 @@ foreach(name SMART_HOME_ONTOLOGY_PATH SMART_HOME_ONTOLOGY_RAM_DIR SMART_HOME_ONT
 endforeach()
 set(ENV{SMART_HOME_RUNTIME_STATE_DIR} "${runtime_test_dir}/state")
 set(ENV{SMART_HOME_RUNTIME_RAM_DIR} "${runtime_ram_dir}")
-file(WRITE "${runtime_test_dir}/input" "3 temperature.get\n1 brightness.set 75\n1 brightness.get\nexit\n")
+file(WRITE "${runtime_test_dir}/input"
+    "device 3 temperature.get\ndevice 1 brightness.set 75\ndevice 1 brightness.get\nexit\n")
 execute_process(COMMAND "${SMART_HOME_EXE}" --log-level=info --log-file=
     INPUT_FILE "${runtime_test_dir}/input" TIMEOUT 30
     RESULT_VARIABLE status OUTPUT_VARIABLE output ERROR_VARIABLE diagnostics)

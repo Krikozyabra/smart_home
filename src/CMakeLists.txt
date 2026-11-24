@@ -16,6 +16,7 @@ target_link_libraries(smart_home PRIVATE
     SmartHome::Persistence
     SmartHome::Events
     SmartHome::Platform
+    SmartHome::Cli
 )
 
 target_link_libraries(smart_home PRIVATE SmartHome::Logging)

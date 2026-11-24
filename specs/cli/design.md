@@ -1,6 +1,6 @@
 # Технические решения модуля CLI
 
-Статус: проектирование. Основание — [spec.md](spec.md) и `AGENTS.md`.
+Статус: реализовано. Основание — [spec.md](spec.md) и `AGENTS.md`.
 Целевая платформа — Linux, Raspberry Pi 4b 8/120 (SD-card), C++17.
 
 ## 1. Архитектурная концепция
@@ -28,8 +28,8 @@ classDiagram
     }
 
     class StringCliSink {
-        -stringstream out_
-        -stringstream err_
+        -string out_
+        -string err_
         +writeLine(string_view) void
         +writeError(string_view) void
         +output() string
@@ -118,16 +118,16 @@ private:
 
 class StringCliSink : public ICliOutputSink {
 public:
-    void writeLine(std::string_view line) override { out_ << line << '\n'; }
-    void writeError(std::string_view error) override { err_ << error << '\n'; }
+    void writeLine(std::string_view line) override { out_.append(line).push_back('\n'); }
+    void writeError(std::string_view error) override { err_.append(error).push_back('\n'); }
 
-    std::string output() const { return out_.str(); }
-    std::string error() const { return err_.str(); }
-    void clear() { out_.str(""); err_.str(""); }
+    std::string output() const { return out_; }
+    std::string error() const { return err_; }
+    void clear() noexcept { out_.clear(); err_.clear(); }
 
 private:
-    std::ostringstream out_;
-    std::ostringstream err_;
+    std::string out_;
+    std::string err_;
 };
 
 } // namespace smart_home::cli
@@ -209,15 +209,7 @@ public:
     CliProcessor(CliProcessor &&) noexcept = default;
     CliProcessor &operator=(CliProcessor &&) noexcept = default;
 
-    void registerCommand(std::unique_ptr<ICliCommand> command) {
-        if (!command)
-            throw std::invalid_argument("Cannot register null command.");
-        const std::string cmd_name(command->name());
-        if (commands_.find(cmd_name) != commands_.end())
-            throw std::invalid_argument("Command already registered: " + cmd_name);
-        commands_.emplace(cmd_name, std::move(command));
-    }
-
+    void registerCommand(std::unique_ptr<ICliCommand> command);
     CliStatus processLine(std::string_view line, ICliOutputSink &sink);
 
 private:
@@ -231,42 +223,31 @@ private:
 
 ## 3. Детали алгоритмов
 
-### 3.1. Однократное разбиение на токены (`splitTokens`)
-Строка разбивается на фрагменты `std::string_view` без создания временных `std::string`
-и без динамических аллокаций памяти для содержимого слов:
-```cpp
-std::vector<std::string_view> splitTokens(std::string_view text) {
-    std::vector<std::string_view> tokens;
-    std::size_t start = 0;
-    while (start < text.size()) {
-        while (start < text.size() && std::isspace(static_cast<unsigned char>(text[start])))
-            ++start;
-        if (start >= text.size()) break;
-        std::size_t end = start;
-        while (end < text.size() && !std::isspace(static_cast<unsigned char>(text[end])))
-            ++end;
-        tokens.push_back(text.substr(start, end - start));
-        start = end;
-    }
-    return tokens;
-}
-```
+### 3.1. Однократное разбиение на токены
+
+`nextToken` сдвигает `std::string_view` за очередной токен, пропуская
+пробельные ASCII-символы. Вектор аргументов заимствует фрагменты исходной
+строки. При регистрации имя команды проверяется как один непустой токен.
 
 ### 3.2. Алгоритм диспетчеризации в `processLine`
-1. `tokens = splitTokens(line);`
-2. Если `tokens.empty()` → возвращаем `CliStatus::EmptyInput`.
-3. `cmd_name = std::string(tokens[0]);`
-4. Поиск `auto it = commands_.find(cmd_name);` в `std::unordered_map`.
-5. Если `it == commands_.end()`:
-   - `sink.writeError("Error: Unknown command: " + cmd_name);`
-   - возвращаем `CliStatus::CommandNotFound`.
-6. Формирование вектора аргументов: `args = {tokens.begin() + 1, tokens.end()};`
-7. Валидация:
-   - `std::string error;`
-   - `if (!it->second->validate(args, error)) { sink.writeError(error); return CliStatus::ValidationError; }`
-8. Выполнение:
-   - `it->second->execute(args, sink);`
-   - возвращаем `CliStatus::Executed`.
+1. Прочитать имя команды через `nextToken`. При пустом вводе вернуть `EmptyInput`.
+2. Найти команду в `std::unordered_map`. При отсутствии вывести `Error: Unknown command: <name>`
+   и вернуть `CommandNotFound`.
+3. Собрать остальные токены в вектор аргументов и вызвать `validate`.
+4. При отклонении вывести диагностическое сообщение и вернуть `ValidationError`.
+5. Вызвать `execute` и после возврата вернуть `Executed`.
+
+### 3.3. Аргументы операций и обработчики
+
+`ShowCommand` передаёт обработчику проверенный `DeviceId`. `DeviceCommand`
+и `GroupCommand` используют общий разбор по `CapabilityCatalog` и передают
+`DeviceOperation` с ID, видом операции и типизированными значениями. У RGB
+три текстовых компонента преобразуются в одно значение `Color`. Групповой
+обработчик также получает ID комнаты и категорию.
+
+Обработчики runtime находят цели, выполняют операции через `CommandDispatcher`
+и управляют снимками. Категорию по дескриптору и формат строк устройства
+предоставляет `DeviceOutput.h`.
 
 ---
 
@@ -274,4 +255,6 @@ std::vector<std::string_view> splitTokens(std::string_view text) {
 
 - `CliProcessor` эксклюзивно владеет объектами `ICliCommand` через `std::unique_ptr`.
 - Методы `validate` являются `const` и не имеют побочных эффектов.
-- Команды stateless: все параметры приходят через `args`, внутреннее состояние между вызовами не сохраняется.
+- Разбор использует данные текущего вызова. Обработчики могут хранить своё состояние.
+- Вызывающий код сериализует регистрацию и обработку строк. Строка ввода и
+  приёмник должны быть доступны на протяжении вызова `processLine`.

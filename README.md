@@ -125,7 +125,7 @@ cmake --build build --target docs
 Старые базы с `devices.type` отклоняются с требованием явной миграции;
 автоматического изменения или пересоздания схемы нет.
 Runtime использует контракт без поля типа. Консольные категории `light` и
-`temperature_sensor` определяются по inventory в runtime и не хранятся в графе.
+`temperature_sensor` определяются по возможностям дескриптора устройства.
 
 Ключ устройства совпадает с локальным `DeviceId`; ключ возможности совпадает с
 `CapabilityDescriptor::getId()` (`on_off`, `brightness`, `color`, `temperature`).
@@ -149,10 +149,13 @@ SQLite / `IDeviceStorage` по-прежнему владеют физическ�
 | `--runtime-ram-dir` | `SMART_HOME_RUNTIME_RAM_DIR` | `/dev/shm` |
 | `--runtime-snapshot-capacity` | `SMART_HOME_RUNTIME_SNAPSHOT_CAPACITY` | `4` |
 
-Команды: `help`, `list`, `show <id>`, `scan`, `save`, `exit`,
-`<id> <operation> [arguments]`, `<room> <type> <operation> [arguments]`.
-Например: `1 brightness.set 75` или `living_room light on_off.set true`.
-Результат команды и подтверждение сохранения выводятся отдельно.
+Модуль `SmartHome::Cli` обрабатывает `help`, `list`, `show <id>`, `scan`, `save`,
+`exit`, `device <id> <operation> [arguments]` и
+`group <room> <type> <operation> [arguments]`. Чтобы выставить яркость первой
+лампы, введите `device 1 brightness.set 75`. Чтобы включить лампы в гостиной,
+введите `group living_room light on_off.set true`.
+Результаты команд и сообщения о сохранении выводятся в stdout, ошибки команд — в stderr.
+Синтаксис, допустимые значения и API описаны в [спецификации CLI](specs/cli/spec.md).
 `exit`, EOF, SIGINT/SIGTERM завершают работу с финальным сохранением.
 
 Runtime работает только в RAM (tmpfs/ramfs), без disk fallback; постоянный

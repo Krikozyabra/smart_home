@@ -21,8 +21,8 @@ ID: Runtime
   Постоянная загрузка ядра на 100%, привязка к CPU и численная гарантия
   задержки не требуются. Файловое сохранение выполняет отдельный worker.
 - RT-002: Композиция компонентов и обработка событий runtime находятся в
-  `src/main.cpp`. Цикл событий выполняет `SmartHome::Events`, а буферизацию stdin
-  выполняет адаптер `src/ConsoleInput.h`.
+  `src/main.cpp`. Цикл событий выполняет `SmartHome::Events`, буферизацию stdin
+  выполняет адаптер `src/ConsoleInput.h`, а готовые строки обрабатывает `SmartHome::Cli`.
 - RT-003: До цикла система создаёт хранилище онтологии, базовые комнаты
   и возможности, восстанавливает сохранённые устройства и связи.
   На первом запуске устройства добавляются в граф при обнаружении внутри цикла.
@@ -68,8 +68,8 @@ scan
 save
 exit
 
-<id> <operation> [arguments]
-<room> <type> <operation> [arguments]
+device <id> <operation> [arguments]
+group <room> <type> <operation> [arguments]
 ```
 
 `id` — локальный DeviceId, `room` — ID комнаты из онтологии,
@@ -80,16 +80,18 @@ exit
 и не являются полем устройства в онтологии.
 
 ```text
-1 brightness.set 75
-1 on_off.set true
-living_room light color.set 10 20 30
-bathroom temperature_sensor temperature.get
+device 1 brightness.set 75
+device 1 on_off.set true
+group living_room light color.set 10 20 30
+group bathroom temperature_sensor temperature.get
 ```
 
 Групповая команда выполняется для всех совпавших устройств с отдельным
 результатом для каждого. Ошибка одной цели не отменяет уже выполненные
 действия и не мешает остальным. Отсутствие совпадений — ошибка команды.
 Пользовательское редактирование онтологии не поддерживается.
+Ошибки ввода и выполнения команд выводятся в stderr. Ответы команд и результаты
+сохранения выводятся в stdout. [Контракт CLI](../cli/spec.md)
 
 Для сохранения одна логическая операция — одно обнаружение или одна команда,
 включая групповую. При частичном успехе сохраняется фактически полученное
@@ -112,9 +114,8 @@ bathroom temperature_sensor temperature.get
 ## Границы
 
 - Текущий этап объединяет devices, descriptors, drivers, registry, command,
-  execution, storage, device_management, discovery, ontology, persistence, logging
-  и [events](../events/spec.md).
-  и [platform](../platform/spec.md).
+  execution, storage, device_management, discovery, ontology, persistence, logging,
+  [events](../events/spec.md), [platform](../platform/spec.md) и [cli](../cli/spec.md).
 - MQTT, audio, OWW и обработка текста пока не подключаются. Требование
   к будущим длительным задачам не означает реализацию ИИ на этом этапе.
 - Диспетчеризацию и межпоточное пробуждение предоставляет `SmartHome::Events`.

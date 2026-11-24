@@ -2,6 +2,13 @@
  * @brief Композиция приложения, консольный цикл и фиксация полных поколений.
  */
 #include "ConsoleInput.h"
+#include "cli/ActionCommand.h"
+#include "cli/CliProcessor.h"
+#include "cli/DeviceCommand.h"
+#include "cli/DeviceOutput.h"
+#include "cli/GroupCommand.h"
+#include "cli/ShowCommand.h"
+#include "cli/StreamCliSink.h"
 #include "command/Command.h"
 #include "device_management/DeviceManager.h"
 #include "discovery/DiscoveryService.h"
@@ -31,7 +38,6 @@
 #include <unistd.h>
 
 #include <algorithm>
-#include <array>
 #include <charconv>
 #include <cstdlib>
 #include <exception>
@@ -42,8 +48,8 @@
 #include <map>
 #include <memory>
 #include <optional>
-#include <sstream>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -132,17 +138,6 @@ IDeviceDriver &requireDriver(DeviceRegistry &registry, DeviceId id) {
     if (!driver)
         throw std::runtime_error("Inventory driver missing.");
     return *driver;
-}
-
-std::string type(const IDeviceDriver &driver) {
-    bool measures_temperature = false;
-    for (const auto &capability : driver.descriptor().getCapabilities()) {
-        const auto &id = capability.getId();
-        if (id == "on_off" || id == "brightness")
-            return "light";
-        measures_temperature |= id == "temperature";
-    }
-    return measures_temperature ? "temperature_sensor" : "device";
 }
 
 Value decodeProperty(const persist::PropertyValue &saved) {
@@ -257,9 +252,11 @@ bool assignDefaultRooms(Ontology &graph, SQLiteDeviceStorage &storage,
     bool changed = false;
     for (const auto &record : storage.getAll())
         if (!graph.getDeviceRoom(record.local_id)) {
-            const auto category = type(requireDriver(registry, record.local_id));
-            graph.assignDeviceToRoom(record.local_id,
-                                     category == "light" ? "living_room" : "bathroom");
+            const auto category = cli::deviceCategory(
+                requireDriver(registry, record.local_id).descriptor());
+            graph.assignDeviceToRoom(record.local_id, category == "light"
+                                                          ? "living_room"
+                                                          : "bathroom");
             changed = true;
         }
     return changed;
@@ -298,51 +295,6 @@ void validateGraph(Ontology &graph, SQLiteDeviceStorage &storage,
             throw std::runtime_error(
                 "Graph capabilities disagree with driver.");
     }
-}
-
-std::string display(const Value &value) {
-    return std::visit(
-        [](const auto &item) {
-            using T = std::decay_t<decltype(item)>;
-            std::ostringstream output;
-            if constexpr (std::is_same_v<T, Color>)
-                output << static_cast<int>(item.red) << ' '
-                       << static_cast<int>(item.green) << ' '
-                       << static_cast<int>(item.blue);
-            else if constexpr (std::is_same_v<T, bool>)
-                output << (item ? "true" : "false");
-            else
-                output << item;
-            return output.str();
-        },
-        value);
-}
-
-std::vector<Value> commandArguments(const std::string &operation,
-                                    const std::vector<std::string> &words,
-                                    std::size_t start) {
-    std::vector<Value> result;
-    if (operation == "on_off.set" && words.size() == start + 1) {
-        if (words[start] != "true" && words[start] != "false")
-            throw std::invalid_argument("Boolean must be true or false.");
-        result.emplace_back(words[start] == "true");
-    } else if (operation == "brightness.set" && words.size() == start + 1)
-        result.emplace_back(integer<int>(words[start]));
-    else if (operation == "color.set" && words.size() == start + 3) {
-        std::array<std::uint8_t, 3> rgb{};
-        for (std::size_t i = 0; i < 3; ++i) {
-            const int component = integer<int>(words[start + i]);
-            if (component < 0 || component > 255)
-                throw std::invalid_argument("RGB component must be 0..255.");
-            rgb[i] = static_cast<std::uint8_t>(component);
-        }
-        result.emplace_back(Color{rgb[0], rgb[1], rgb[2]});
-    } else if (words.size() != start || operation.size() <= 4 ||
-               operation.compare(operation.size() - 4, 4, ".get") != 0 ||
-               !CapabilityCatalog::find(std::string_view(operation).substr(0, operation.size() - 4)))
-        throw std::invalid_argument(
-            "Unknown operation or wrong argument count.");
-    return result;
 }
 
 int run(const persist::PersistenceConfig &config) {
@@ -399,6 +351,7 @@ int run(const persist::PersistenceConfig &config) {
         false));
     DiscoveryService discovery(manager, std::move(sources));
     runtime::ConsoleInput console(STDIN_FILENO);
+    cli::StreamCliSink console_output(std::cout, std::cerr);
     persist::SaveWorker worker(state_lock, config.capacity);
     ev::EventBus bus;
     std::exception_ptr reactor_error;
@@ -430,12 +383,15 @@ int run(const persist::PersistenceConfig &config) {
                 confirmed = std::max(confirmed, result.revision);
                 if (confirmed == revision)
                     unsaved = false;
-                std::cout << "Saved revision " << result.revision << '\n';
+                console_output.writeLine("Saved revision " +
+                                         std::to_string(result.revision));
             } else {
                 if (result.revision == revision)
                     unsaved = true;
-                std::cout << "Save failed for revision " << result.revision
-                          << "; changes remain in RAM. Use save to retry.\n";
+                console_output.writeLine(
+                    "Save failed for revision " +
+                    std::to_string(result.revision) +
+                    "; changes remain in RAM. Use save to retry.");
                 log::log(log::Level::Error, "Runtime",
                          "Generation commit failed; RAM state retained.");
             }
@@ -445,7 +401,8 @@ int run(const persist::PersistenceConfig &config) {
             bus.publish(result);
         std::cout.flush();
     };
-    const auto prepare = [&](persist::Reservation &reservation) {
+    const auto prepare = [&](persist::Reservation &reservation,
+                             cli::ICliOutputSink &sink) {
         try {
             validateGraph(graph, storage, registry, snapshotGraph(graph));
             persist::Snapshot snapshot(workspace.path(), revision);
@@ -453,26 +410,27 @@ int run(const persist::PersistenceConfig &config) {
             database.backupTo(snapshot.directory() / "state.sqlite");
             graph.dumpToFile((snapshot.directory() / "ontology.lbdb").string());
             reservation.submit(std::move(snapshot));
-            std::cout << "Save queued revision " << revision << '\n';
+            sink.writeLine("Save queued revision " + std::to_string(revision));
             return true;
         } catch (...) {
             unsaved = true;
-            std::cout << "Save preparation failed; changes remain in RAM. Use "
-                         "save to retry.\n";
+            sink.writeLine(
+                "Save preparation failed; changes remain in RAM. Use "
+                "save to retry.");
             log::log(log::Level::Error, "Runtime",
                      "Snapshot preparation failed; RAM state retained.");
             return false;
         }
     };
-    const auto scan = [&] {
+    const auto scan = [&](cli::ICliOutputSink &sink) {
         auto reservation = worker.reserve();
         if (!reservation) {
-            std::cout << "Error: snapshot queue full; scan rejected before "
-                         "execution.\n";
+            sink.writeError(
+                "Error: snapshot queue full; scan rejected before execution.");
             return;
         }
         if (revision == std::numeric_limits<Revision>::max()) {
-            std::cout << "Error: Runtime revision overflow.\n";
+            sink.writeError("Error: Runtime revision overflow.");
             return;
         }
         const auto changed_revision = persist::nextRevision(revision);
@@ -481,15 +439,17 @@ int run(const persist::PersistenceConfig &config) {
             const auto before = snapshotGraph(graph);
             const auto count = storage.getAll().size();
             const auto report = discovery.scanOnce();
-            std::cout << "Scan: " << report.devices_processed << " processed, "
-                      << report.errors.size() << " errors\n";
+            sink.writeLine("Scan: " + std::to_string(report.devices_processed) +
+                           " processed, " +
+                           std::to_string(report.errors.size()) + " errors");
             changed = assignDefaultRooms(graph, storage, registry) ||
-                      storage.getAll().size() != count || snapshotGraph(graph) != before;
+                      storage.getAll().size() != count ||
+                      snapshotGraph(graph) != before;
         } catch (...) {
             changed = true; // A partial inventory/graph operation must never be
                             // reported as a clean scan.
-            std::cout << "Error: scan incomplete; changes remain in RAM. Retry "
-                         "scan.\n";
+            sink.writeError(
+                "Error: scan incomplete; changes remain in RAM. Retry scan.");
             log::log(log::Level::Error, "Runtime",
                      "Discovery/graph operation incomplete.");
         }
@@ -497,172 +457,154 @@ int run(const persist::PersistenceConfig &config) {
             markChanged(changed_revision);
         if (changed || initialized) {
             initialized = false;
-            prepare(reservation);
+            prepare(reservation, sink);
         }
     };
-    // Console categories are a runtime convention; ontology stores no type
-    // field.
-    const auto consoleType = [&](DeviceId id) {
-        return type(requireDriver(registry, id));
+    const auto consoleCategory = [&](DeviceId id) {
+        return cli::deviceCategory(requireDriver(registry, id).descriptor());
     };
-    const auto show = [&](DeviceId id) {
+    const auto show = [&](DeviceId id, cli::ICliOutputSink &sink) {
         const auto details = graph.getDeviceDetails(id);
         if (!details)
             throw std::invalid_argument("Unknown device ID.");
-        std::cout << "Device " << id << " " << details->device.name << " "
-                  << consoleType(id) << " room=" << details->room_id << '\n';
+        cli::writeDeviceSummary(sink, id, details->device.name,
+                                consoleCategory(id), details->room_id);
         for (const auto &ability : details->ability_ids) {
             const auto value =
                 dispatcher.execute(Command(id, ability + ".get", {}));
-            std::cout << "  " << ability << " = " << display(value.value())
-                      << '\n';
+            cli::writeDeviceProperty(sink, ability, value.value());
         }
     };
     bool exiting = false;
-    const auto stop_subscription = bus.subscribe<StopRequestedEvent>(
-        [&](const StopRequestedEvent &) {
+    const auto stop_subscription =
+        bus.subscribe<StopRequestedEvent>([&](const StopRequestedEvent &) {
             exiting = true;
             reactor.stop();
         });
-    const auto command = [&](const std::string &line) {
-        std::istringstream input(line);
-        std::vector<std::string> words;
-        for (std::string word; input >> word;)
-            words.push_back(std::move(word));
-        if (words.empty())
+    const auto executeDevices = [&](std::vector<DeviceId> targets,
+                                    const cli::DeviceOperation &operation,
+                                    cli::ICliOutputSink &sink) {
+        // Even a no-op setter reserves before execution, then releases the
+        // unused slot.
+        std::optional<persist::Reservation> reservation;
+        DevicePropertiesMap before;
+        Revision changed_revision = revision;
+        if (operation.type == OperationType::Write) {
+            reservation.emplace(worker.reserve());
+            if (!*reservation)
+                throw std::runtime_error("Snapshot queue full; change "
+                                         "rejected before execution.");
+            changed_revision = persist::nextRevision(revision);
+            before = capture(storage, registry);
+        }
+        const std::string operation_id(operation.id);
+        std::sort(targets.begin(), targets.end());
+        for (const auto id : targets) {
+            try {
+#if defined(SMART_HOME_RUNTIME_TESTING) && SMART_HOME_RUNTIME_TESTING == 1
+                PERSISTENCE_TEST_POINT(("target-" + std::to_string(id)).c_str(),
+                                       revision);
+#endif
+                const auto result = dispatcher.execute(
+                    Command(id, operation_id, operation.arguments));
+                cli::writeDeviceResult(sink, id, operation.id, result);
+            } catch (const std::exception &error) {
+                cli::writeDeviceError(sink, id, error.what());
+                log::log(log::Level::Warn, "Runtime", "Device command failed.");
+            }
+        }
+        if (!reservation)
             return;
         try {
-            if (words[0] == "help" && words.size() == 1) {
-                std::cout << "help | list | show <id> | scan | save | exit\n"
-                             "<id> <operation> [arguments]\n<room> <type> "
-                             "<operation> [arguments]\n"
-                             "Rooms: living_room, bathroom; types: light, "
-                             "temperature_sensor\n"
-                             "Operations: on_off.get/set (true|false), "
-                             "brightness.get/set (0..100), color.get/set (R G "
-                             "B, 0..255), temperature.get\n";
+            if (before == capture(storage, registry))
                 return;
-            }
-            if (words[0] == "exit" && words.size() == 1) {
-                bus.publish(StopRequestedEvent{});
-                return;
-            }
-            if (words[0] == "list" && words.size() == 1) {
-                for (const auto &device : graph.getAllDevices()) {
-                    const auto room = graph.getDeviceRoom(device.id);
-                    std::cout << "Device " << device.id << " " << device.name
-                              << " " << consoleType(device.id)
-                              << " room=" << (room ? room->id : "") << '\n';
-                }
-                return;
-            }
-            if (words[0] == "show" && words.size() == 2) {
-                const auto id = integer<DeviceId>(words[1]);
-                if (id < 0)
-                    throw std::invalid_argument(
-                        "Device ID must be nonnegative.");
-                show(id);
-                return;
-            }
-            if (words[0] == "scan" && words.size() == 1) {
-                scan();
-                return;
-            }
-            if (words[0] == "save" && words.size() == 1) {
-                auto reservation = worker.reserve();
-                if (!reservation)
-                    throw std::runtime_error(
-                        "Snapshot queue full; save was not queued.");
-                prepare(reservation);
-                return;
-            }
-            std::vector<DeviceId> targets;
-            std::size_t operation_index;
-            const bool address = !words[0].empty() &&
-                                 (words[0][0] == '-' ||
-                                  (words[0][0] >= '0' && words[0][0] <= '9'));
-            if (address) {
-                const auto id = integer<DeviceId>(words[0]);
-                if (id < 0)
-                    throw std::invalid_argument(
-                        "Device ID must be nonnegative.");
-                targets.push_back(id);
-                operation_index = 1;
-            } else {
-                if (words.size() < 3)
-                    throw std::invalid_argument(
-                        "Expected room, type and operation.");
-                if (words[1] != "light" && words[1] != "temperature_sensor")
-                    throw std::invalid_argument("Unknown device type.");
-                for (const auto &device : graph.getDevicesInRoom(words[0]))
-                    if (consoleType(device.id) == words[1])
-                        targets.push_back(device.id);
-                if (targets.empty())
-                    throw std::invalid_argument("No matching devices.");
-                operation_index = 2;
-            }
-            if (words.size() <= operation_index)
-                throw std::invalid_argument("Missing operation.");
-            const auto &operation = words[operation_index];
-            const auto values =
-                commandArguments(operation, words, operation_index + 1);
-            const bool mutating =
-                operation.size() >= 4 &&
-                operation.substr(operation.size() - 4) == ".set";
-            // Even a no-op setter reserves before execution, then releases the
-            // unused slot.
-            std::optional<persist::Reservation> reservation;
-            DevicePropertiesMap before;
-            Revision changed_revision = revision;
-            if (mutating) {
-                reservation.emplace(worker.reserve());
-                if (!*reservation)
-                    throw std::runtime_error("Snapshot queue full; change "
-                                             "rejected before execution.");
-                changed_revision = persist::nextRevision(revision);
-                before = capture(storage, registry);
-            }
-            std::sort(targets.begin(), targets.end());
-            for (const auto id : targets) {
-                try {
-#if defined(SMART_HOME_RUNTIME_TESTING) && SMART_HOME_RUNTIME_TESTING == 1
-                    PERSISTENCE_TEST_POINT(
-                        ("target-" + std::to_string(id)).c_str(), revision);
-#endif
-                    const auto result =
-                        dispatcher.execute(Command(id, operation, values));
-                    std::cout << "Device " << id << " " << operation << ": "
-                              << (result ? display(*result) : "applied")
-                              << '\n';
-                } catch (const std::exception &error) {
-                    std::cout << "Device " << id << " error: " << error.what()
-                              << '\n';
-                    log::log(log::Level::Warn, "Runtime",
-                             "Device command failed.");
-                }
-            }
-            if (mutating) {
-                try {
-                    if (before == capture(storage, registry))
-                        return;
-                } catch (...) {
-                    // A setter may have succeeded before the comparison failed.
-                    markChanged(changed_revision);
-                    throw;
-                }
-                markChanged(changed_revision);
-                std::cout << "Changes applied; save pending revision "
-                          << revision << '\n';
-                prepare(*reservation);
-            }
-        } catch (const std::exception &error) {
-            std::cout << "Error: " << error.what() << '\n';
-            log::log(log::Level::Warn, "Runtime", "Console command rejected.");
+        } catch (...) {
+            // A setter may have succeeded before the comparison failed.
+            markChanged(changed_revision);
+            throw;
         }
+        markChanged(changed_revision);
+        sink.writeLine("Changes applied; save pending revision " +
+                       std::to_string(revision));
+        prepare(*reservation, sink);
     };
+
+    cli::CliProcessor commands;
+    commands.registerCommand(std::make_unique<cli::ActionCommand>(
+        "help", 0, [](const cli::CliArguments &, cli::ICliOutputSink &sink) {
+            sink.writeLine("help | list | show <id> | scan | save | exit");
+            sink.writeLine("device <id> <operation> [arguments]");
+            sink.writeLine("group <room> <type> <operation> [arguments]");
+            sink.writeLine(
+                "Types: light, temperature_sensor. Use a room ID from list.");
+            sink.writeLine(
+                "Operations: on_off.get/set (true|false), "
+                "brightness.get/set (0..100), color.get/set (R G B, 0..255), "
+                "temperature.get, humidity.get, contact.get, battery.get, "
+                "power.get");
+        }));
+    commands.registerCommand(std::make_unique<cli::ActionCommand>(
+        "list", 0, [&](const cli::CliArguments &, cli::ICliOutputSink &sink) {
+            for (const auto &device : graph.getAllDevices()) {
+                const auto room = graph.getDeviceRoom(device.id);
+                cli::writeDeviceSummary(
+                    sink, device.id, device.name, consoleCategory(device.id),
+                    room ? std::string_view(room->id) : std::string_view{});
+            }
+        }));
+    commands.registerCommand(std::make_unique<cli::ShowCommand>(show));
+    commands.registerCommand(std::make_unique<cli::ActionCommand>(
+        "scan", 0, [&](const cli::CliArguments &, cli::ICliOutputSink &sink) {
+            scan(sink);
+        }));
+    commands.registerCommand(std::make_unique<cli::ActionCommand>(
+        "save", 0, [&](const cli::CliArguments &, cli::ICliOutputSink &sink) {
+            auto reservation = worker.reserve();
+            if (!reservation)
+                throw std::runtime_error(
+                    "Snapshot queue full; save was not queued.");
+            prepare(reservation, sink);
+        }));
+    commands.registerCommand(std::make_unique<cli::ActionCommand>(
+        "exit", 0, [&](const cli::CliArguments &, cli::ICliOutputSink &) {
+            bus.publish(StopRequestedEvent{});
+        }));
+    commands.registerCommand(std::make_unique<cli::DeviceCommand>(
+        [&](DeviceId id, const cli::DeviceOperation &operation,
+            cli::ICliOutputSink &sink) {
+            executeDevices({id}, operation, sink);
+        }));
+    commands.registerCommand(std::make_unique<cli::GroupCommand>(
+        [&](std::string_view room, std::string_view category,
+            const cli::DeviceOperation &operation, cli::ICliOutputSink &sink) {
+            const std::string room_id(room);
+            std::vector<DeviceId> targets;
+            if (graph.getRoom(room_id)) {
+                for (const auto &device : graph.getDevicesInRoom(room_id))
+                    if (consoleCategory(device.id) == category)
+                        targets.push_back(device.id);
+            }
+            if (targets.empty())
+                throw std::invalid_argument("No matching devices.");
+            executeDevices(std::move(targets), operation, sink);
+        }));
+
     const auto command_subscription = bus.subscribe<ConsoleCommandEvent>(
         [&](const ConsoleCommandEvent &event) {
-            command(event.line);
+            bool rejected = false;
+            try {
+                const auto status =
+                    commands.processLine(event.line, console_output);
+                rejected = status == cli::CliStatus::ValidationError ||
+                           status == cli::CliStatus::CommandNotFound;
+            } catch (const std::exception &error) {
+                console_output.writeError("Error: " +
+                                          std::string(error.what()));
+                rejected = true;
+            }
+            if (rejected)
+                log::log(log::Level::Warn, "Runtime",
+                         "Console command rejected.");
             std::cout.flush();
         });
 
@@ -678,7 +620,7 @@ int run(const persist::PersistenceConfig &config) {
         if (input.status == Status::Line || (input.status == Status::End && !input.line.empty()))
             bus.publish(ConsoleCommandEvent{std::move(input.line)});
         if (input.status == Status::TooLong)
-            std::cout << "Error: input line too long.\n" << std::flush;
+            console_output.writeError("Error: input line too long.");
         if (input.status == Status::End && !exiting)
             bus.publish(StopRequestedEvent{});
         if (!exiting && console.hasBufferedInput()) {
@@ -708,7 +650,7 @@ int run(const persist::PersistenceConfig &config) {
     });
     reactor.post([&] {
         if (!signals.isStopRequested())
-            scan();
+            scan(console_output);
         std::cout.flush();
     });
 
@@ -723,7 +665,7 @@ int run(const persist::PersistenceConfig &config) {
         collect();
         auto reservation = worker.reserve();
         if (reservation) {
-            final_queued = prepare(reservation);
+            final_queued = prepare(reservation, console_output);
             break;
         }
         reactor.step();
