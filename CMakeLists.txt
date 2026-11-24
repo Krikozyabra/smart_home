@@ -35,6 +35,7 @@ add_subdirectory(discovery)
 add_subdirectory(mqtt)
 include(cmake/OnnxRuntime.cmake)
 add_subdirectory(oww)
+add_subdirectory(stt)
 
 add_subdirectory(src)
 
