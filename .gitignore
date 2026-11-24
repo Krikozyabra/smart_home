@@ -29,4 +29,7 @@ build
 /oww/models/*.onnx
 /oww/models/*.part
 
+# Locally prepared Silero TTS model
+/tts/models/
+
 data/

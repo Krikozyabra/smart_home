@@ -669,3 +669,81 @@ ctest --test-dir build -R audio_oww_demo --output-on-failure
 написано на C++17 и не требует Python для запуска.
 
 Спецификация сценария: [specs/audio/console-demo.md](specs/audio/console-demo.md).
+
+## Офлайн-синтез речи (TTS)
+
+`SmartHome::Tts` синхронно преобразует русский текст UTF-8 в монофонические
+буферы `float` и signed PCM16. Модель Silero выполняется локально на CPU через
+ONNX Runtime. Для подключения библиотеки к своему CMake-таргету включите
+`SMART_HOME_BUILD_TTS` и добавьте зависимость `SmartHome::Tts`. По умолчанию
+опция выключена. SDK настраивается так же, как для OpenWakeWord.
+
+```sh
+cmake -B build -S . -DSMART_HOME_BUILD_TTS=ON
+cmake --build build -j 4
+ctest --test-dir build -R '^tts_tests$' --output-on-failure
+```
+
+```cpp
+#include <tts/SileroTtsSynthesizer.h>
+
+smart_home::tts::TtsConfig config;
+config.model_path = "build/tts/models/silero_ru.onnx";
+smart_home::tts::SileroTtsSynthesizer tts(config);
+const auto audio = tts.synthesize("Св+ет в гост+иной включён.");
+```
+
+По умолчанию используются 24000 Гц, голос `xenia` и два потока CPU. Также
+доступны 8000 и 48000 Гц, голоса `aidar`, `baya`, `kseniya`, `eugene`, `random`
+и от одного до четырёх потоков. Знак `+` перед гласной задаёт ударение. Экспорт
+`v4_ru` использует ручную разметку ударения. Пробельный и полностью
+отфильтрованный ввод возвращает пустые буферы и нулевую длительность.
+Конструктор загружает и прогревает модель. Вызовы одного экземпляра должны
+быть последовательными. Приложение получает готовые отсчёты в RAM и управляет
+воспроизведением отдельно. [Контракт модуля](specs/tts/spec.md)
+
+### Подготовка модели Silero
+
+Цель `tts_models` скачивает официальный `v4_ru.pt`, проверяет SHA-256 и
+экспортирует `build/tts/models/silero_ru.onnx`. Экспорт проверяет форму и
+численное совпадение сигнала с исходной моделью на трёх частотах. Обычная сборка,
+`tts_tests` и синтез используют локальные файлы. Библиотеке требуется только
+ONNX Runtime для инференса. Подробности о контрольной сумме и лицензии модели
+приведены в [описании экспорта](specs/tts/design.md#5-подготовка-модели).
+
+Для разового экспорта на рабочей машине подойдут проверенные версии Python 3.14,
+PyTorch 2.11.0 (CPU), ONNX 1.23.2 и Python ONNX Runtime 1.32.0.
+
+```sh
+python3 -m venv build/tts-export-env
+build/tts-export-env/bin/python -m pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cpu
+build/tts-export-env/bin/python -m pip install onnx==1.23.2 onnxruntime==1.32.0
+cmake -B build -S . -DSMART_HOME_BUILD_TTS=ON \
+  -DSMART_HOME_TTS_EXPORT_PYTHON="$PWD/build/tts-export-env/bin/python"
+cmake --build build --target tts_models
+```
+
+Готовый `silero_ru.onnx` можно перенести на Raspberry Pi и передать путь через
+`TtsConfig::model_path`. Для загрузки готового совместимого ONNX-файла
+через `tts_models` задайте `SMART_HOME_TTS_MODEL_URL` и его
+`SMART_HOME_TTS_MODEL_SHA256`. Уже скачанный `v4_ru.pt` можно положить в
+`build/tts/models/` для экспорта без сети.
+
+Для другого совместимого экспорта укажите `TtsConfig::tokens_path`, если
+порядок символов отличается. В словаре UTF-8 одна строка задаёт один символ,
+индекс первой строки равен нулю. Для пробела используется строка из одного
+пробела. Требуются пробел, `+`, точка и `~`. Входы и выход модели описаны
+в [техническом проекте TTS](specs/tts/design.md).
+
+Отдельная проверка обученной модели выводит время прогрева, RTF и пиковый RSS
+процесса. Запустите её с путём к готовой модели.
+
+```sh
+cmake -B build -S . -DSMART_HOME_BUILD_TTS=ON \
+  -DSMART_HOME_TTS_TEST_MODEL="$PWD/build/tts/models/silero_ru.onnx"
+cmake --build build --target tts_model_tests
+ctest --test-dir build -R '^tts_model_tests$' -V
+```
+
+При необходимости задайте `SMART_HOME_TTS_TEST_TOKENS` с путём к словарю
+для этой модели. Замеры на целевой плате и оценка звучания проводятся отдельно.

@@ -37,6 +37,7 @@ add_subdirectory(cli)
 include(cmake/OnnxRuntime.cmake)
 add_subdirectory(oww)
 add_subdirectory(stt)
+add_subdirectory(tts)
 
 add_subdirectory(src)
 
