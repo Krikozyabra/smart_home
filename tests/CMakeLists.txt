@@ -315,6 +315,13 @@ foreach(suite target IN ZIP_LISTS persistence_suites persistence_targets)
 endforeach()
 
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
+if(TARGET smart_home_voice_demo)
+    add_test(NAME voice_demo_tests
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/VoiceDemoTests.py
+            $<TARGET_FILE:smart_home_voice_demo> ${CMAKE_CURRENT_SOURCE_DIR})
+    set_tests_properties(voice_demo_tests PROPERTIES TIMEOUT 30)
+endif()
+
 # The test executable uses the instrumented persistence library.
 add_executable(runtime_test_app ${PROJECT_SOURCE_DIR}/src/main.cpp)
 get_target_property(runtime_libraries smart_home LINK_LIBRARIES)

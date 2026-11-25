@@ -41,3 +41,17 @@ if(SMART_HOME_BUILD_AUDIO_OWW_DEMO)
         CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
     target_compile_options(smart_home_audio_oww_demo PRIVATE -Wall -Wextra -Wpedantic)
 endif()
+
+option(SMART_HOME_BUILD_VOICE_DEMO "Build the one-shot OWW/STT/TTS voice demo" OFF)
+if(SMART_HOME_BUILD_VOICE_DEMO)
+    if(NOT TARGET SmartHome::Stt OR NOT TARGET SmartHome::Tts)
+        message(FATAL_ERROR "The voice demo requires SMART_HOME_BUILD_STT=ON and SMART_HOME_BUILD_TTS=ON.")
+    endif()
+    find_package(ALSA REQUIRED)
+    add_executable(smart_home_voice_demo voice_demo.cpp)
+    target_link_libraries(smart_home_voice_demo PRIVATE
+        SmartHome::Audio SmartHome::Oww SmartHome::Stt SmartHome::Tts ALSA::ALSA)
+    set_target_properties(smart_home_voice_demo PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    target_compile_options(smart_home_voice_demo PRIVATE -Wall -Wextra -Wpedantic)
+endif()

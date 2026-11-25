@@ -747,3 +747,42 @@ ctest --test-dir build -R '^tts_model_tests$' -V
 
 При необходимости задайте `SMART_HOME_TTS_TEST_TOKENS` с путём к словарю
 для этой модели. Замеры на целевой плате и оценка звучания проводятся отдельно.
+
+## Проверка голосового тракта OWW → STT → TTS
+
+После сообщения `Waiting for the wake word` скажите «Нафаня». Дождитесь
+`Wake word detected` и произнесите фразу. `smart_home_voice_demo` записывает
+следующие пять секунд, выводит транскрипцию и повторяет её голосом `aidar`,
+затем завершается. При пустой транскрипции звучит «Я не расслышал».
+Ожидание можно прервать через Ctrl+C.
+
+```sh
+cmake -B build -S . -DSMART_HOME_BUILD_VOICE_DEMO=ON \
+  -DSMART_HOME_BUILD_STT=ON -DSMART_HOME_BUILD_TTS=ON \
+  -DSMART_HOME_FETCH_SHERPA_ONNX=ON
+cmake --build build --target smart_home_voice_demo -j 4
+```
+
+Готовый SDK sherpa-onnx и соответствующий ему ONNX Runtime можно задать
+явно. [Настройка SDK для STT](specs/stt/walkthrough.md)
+
+Подготовьте модели OpenWakeWord, GigaAM-v3 CTC и Silero TTS, если их ещё нет.
+Для экспорта Silero используйте Python-окружение из раздела TTS.
+
+```sh
+cmake --build build --target oww_models stt_models tts_models
+./build/bin/smart_home_voice_demo \
+  --wake-model oww/models/nafanya.onnx \
+  --stt-model build/stt/models/gigaam_v3_ctc_int8.onnx \
+  --stt-tokens build/stt/models/tokens.txt \
+  --tts-model build/tts/models/silero_ru.onnx
+```
+
+Оба устройства ALSA используют `default`. Чтобы выбрать другие, передайте
+`--capture-device PCM` и `--playback-device PCM`. `--threshold` задаёт порог
+активации (по умолчанию `0.5`), `--record-seconds` задаёт целое число секунд
+записи (от 1 до 30). `--help` показывает параметры.
+
+`ctest --test-dir build -R '^voice_demo_tests$' --output-on-failure` проверяет
+цепочку на локальных ONNX-фикстурах и виртуальных устройствах ALSA.
+[Контракт сценария](specs/audio/voice-demo.md)
